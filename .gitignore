@@ -1,0 +1,8 @@
+*.o
+*.a
+*.so
+*.md
+compile_commands.json
+build/
+tonarchy
+.cache/
