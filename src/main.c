@@ -7,6 +7,26 @@
 #include <sys/ioctl.h>
 #include <ctype.h>
 
+typedef struct {
+    char *cinnamon_package;
+    char *suckless_package;
+} Packages;
+
+void set_cinnamon_package(Packages *pkg) {
+    pkg->cinnamon_package = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo cinnamon cinnamon-translations nemo nemo-fileroller gnome-terminal lightdm lightdm-gtk-greeter file-roller firefox alacritty vlc evince eog gedit";
+}
+
+void set_suckless_package(Packages *pkg) {
+    pkg->suckless_package = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr libx11 libxft libxinerama firefox picom xclip xwallpaper ttf-jetbrains-mono-nerd slock maim rofi alsa-utils pulseaudio pulseaudio-alsa pavucontrol";
+}
+
+void sserror(int x) {
+    if (x != 1){
+        exit(1);
+    }
+}
+
+
 static struct termios orig_termios;
 
 static void disable_raw_mode(void) {
@@ -786,7 +806,7 @@ static int install_packages(const char *package_list) {
     fflush(stdout);
 
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "pacstrap -K /mnt $(cat %s)", package_list);
+    snprintf(cmd, sizeof(cmd), "pacstrap -K /mnt %s", package_list);
 
     if (system(cmd) != 0) {
         show_message("Failed to install packages");
@@ -800,6 +820,7 @@ static int install_packages(const char *package_list) {
 static int configure_system(const char *username, const char *password,
                            const char *hostname, const char *keyboard,
                            const char *timezone, const char *disk, int use_dm) {
+    (void)disk;
     char cmd[4096];
     int rows, cols;
     get_terminal_size(&rows, &cols);
@@ -837,7 +858,7 @@ static int configure_system(const char *username, const char *password,
         "useradd -m -G wheel -s /bin/bash %s\n"
         "echo \"%s:%s\" | chpasswd\n"
         "echo \"root:%s\" | chpasswd\n"
-        "sed -i \"s/^# %%wheel ALL=(ALL:ALL) ALL/%%wheel ALL=(ALL:ALL) ALL/\" /etc/sudoers\n"
+        "echo \"%%wheel ALL=(ALL:ALL) ALL\" >> /etc/sudoers\n"
         "systemctl enable NetworkManager\n"
         "%s"
         "' >> /tmp/tonarchy-install.log 2>&1",
@@ -846,7 +867,7 @@ static int configure_system(const char *username, const char *password,
         use_dm ? "systemctl enable lightdm\n" : "");
 
     system("echo '=== Running configure_system ===' >> /tmp/tonarchy-install.log");
-    if (system(cmd) != 0) {
+    if (system(cmd) == -1) {
         show_message("Failed to configure system - check /tmp/tonarchy-install.log");
         return 0;
     }
@@ -946,9 +967,6 @@ static int install_suckless_tools(const char *username) {
     printf("\033[%d;%dH\033[37mCloning and building from source...\033[0m", 11, logo_start);
     fflush(stdout);
 
-    // Copy wallpaper to /mnt/tmp first
-    system("cp walls/wall1.jpg /mnt/tmp/wall1.jpg 2>/dev/null");
-
     char cmd[4096];
     snprintf(cmd, sizeof(cmd),
         "arch-chroot /mnt /bin/bash -c '\n"
@@ -960,10 +978,6 @@ static int install_suckless_tools(const char *username) {
         "cd ../st && make clean install\n"
         "cd ../dmenu && make clean install\n"
         "cd /home/%s\n"
-        "sudo -u %s mkdir -p .config walls\n"
-        "mv /tmp/wall1.jpg /home/%s/walls/wall1.jpg 2>/dev/null || true\n"
-        "chown %s:%s /home/%s/walls/wall1.jpg 2>/dev/null || true\n"
-        "echo \"xwallpaper --zoom \\$HOME/walls/wall1.jpg &\" > /home/%s/.xinitrc\n"
         "echo \"exec dwm\" >> /home/%s/.xinitrc\n"
         "chown %s:%s /home/%s/.xinitrc\n"
         "chmod +x /home/%s/.xinitrc\n"
@@ -978,10 +992,9 @@ static int install_suckless_tools(const char *username) {
         "'",
         username, username, username, username, username, username,
         username, username, username, username, username, username,
-        username, username, username, username, username, username,
         username, username, username, username, username);
 
-    if (system(cmd) != 0) {
+    if (system(cmd) == -1) {
         show_message("Warning: Failed to install suckless tools (can be done manually)");
         return 1;
     }
@@ -1019,21 +1032,13 @@ int main(void) {
     }
 
     if (level == 0) {
-        if (!partition_disk(disk)) {
-            return 1;
-        }
+        Packages pkg = {0};
+        sserror(partition_disk(disk));
+        set_cinnamon_package(&pkg);
 
-        if (!install_packages("packages/beginner.txt")) {
-            return 1;
-        }
-
-        if (!configure_system(username, password, hostname, keyboard, timezone, disk, 1)) {
-            return 1;
-        }
-
-        if (!install_bootloader(disk)) {
-            return 1;
-        }
+        sserror(install_packages(pkg.cinnamon_package));
+        sserror(configure_system(username, password, hostname, keyboard, timezone, disk, 1));
+        sserror(install_bootloader(disk));
 
         configure_cinnamon_keybinds(username);
 
@@ -1053,22 +1058,13 @@ int main(void) {
         read(STDIN_FILENO, &c, 1);
         disable_raw_mode();
     } else if (level == 1) {
-        // Tony-Suckless mode
-        if (!partition_disk(disk)) {
-            return 1;
-        }
+        Packages pkg = {0};
+        sserror(partition_disk(disk));
+        set_suckless_package(&pkg);
 
-        if (!install_packages("packages/suckless.txt")) {
-            return 1;
-        }
-
-        if (!configure_system(username, password, hostname, keyboard, timezone, disk, 0)) {
-            return 1;
-        }
-
-        if (!install_bootloader(disk)) {
-            return 1;
-        }
+        sserror(install_packages(pkg.suckless_package));
+        sserror(configure_system(username, password, hostname, keyboard, timezone, disk, 0));
+        sserror(install_bootloader(disk));
 
         install_suckless_tools(username);
 
