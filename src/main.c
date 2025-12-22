@@ -689,6 +689,307 @@ static int select_disk(char *disk_name) {
     return 1;
 }
 
+static int partition_disk(const char *disk) {
+    char cmd[1024];
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+
+    clear_screen();
+    draw_logo(cols);
+
+    int logo_start = (cols - 70) / 2;
+    printf("\033[%d;%dH\033[37mPartitioning /dev/%s...\033[0m", 10, logo_start, disk);
+    fflush(stdout);
+
+    snprintf(cmd, sizeof(cmd), "wipefs -af /dev/%s 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to wipe disk");
+        return 0;
+    }
+
+    snprintf(cmd, sizeof(cmd), "sgdisk --zap-all /dev/%s 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to zap disk");
+        return 0;
+    }
+
+    snprintf(cmd, sizeof(cmd),
+        "sgdisk --clear "
+        "--new=1:0:+1G --typecode=1:ef00 --change-name=1:EFI "
+        "--new=2:0:+4G --typecode=2:8200 --change-name=2:swap "
+        "--new=3:0:0 --typecode=3:8300 --change-name=3:root "
+        "/dev/%s 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to create partitions");
+        return 0;
+    }
+
+    printf("\033[%d;%dH\033[37mFormatting partitions...\033[0m", 11, logo_start);
+    fflush(stdout);
+
+    snprintf(cmd, sizeof(cmd), "mkfs.fat -F32 /dev/%s1 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to format EFI partition");
+        return 0;
+    }
+
+    snprintf(cmd, sizeof(cmd), "mkswap /dev/%s2 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to format swap partition");
+        return 0;
+    }
+
+    snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F /dev/%s3 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to format root partition");
+        return 0;
+    }
+
+    printf("\033[%d;%dH\033[37mMounting partitions...\033[0m", 12, logo_start);
+    fflush(stdout);
+
+    snprintf(cmd, sizeof(cmd), "mount /dev/%s3 /mnt 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to mount root partition");
+        return 0;
+    }
+
+    snprintf(cmd, sizeof(cmd), "mkdir -p /mnt/boot 2>&1");
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "mount /dev/%s1 /mnt/boot 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to mount EFI partition");
+        return 0;
+    }
+
+    snprintf(cmd, sizeof(cmd), "swapon /dev/%s2 2>&1", disk);
+    if (system(cmd) != 0) {
+        show_message("Failed to enable swap");
+        return 0;
+    }
+
+    show_message("Disk prepared successfully!");
+    return 1;
+}
+
+static int install_packages(const char *package_list) {
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+
+    clear_screen();
+    draw_logo(cols);
+
+    int logo_start = (cols - 70) / 2;
+    printf("\033[%d;%dH\033[37mInstalling system packages...\033[0m", 10, logo_start);
+    printf("\033[%d;%dH\033[37mThis will take several minutes.\033[0m", 11, logo_start);
+    fflush(stdout);
+
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "pacstrap -K /mnt $(cat %s)", package_list);
+
+    if (system(cmd) != 0) {
+        show_message("Failed to install packages");
+        return 0;
+    }
+
+    show_message("Packages installed successfully!");
+    return 1;
+}
+
+static int configure_system(const char *username, const char *password,
+                           const char *hostname, const char *keyboard,
+                           const char *timezone, const char *disk, int use_dm) {
+    char cmd[4096];
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+
+    clear_screen();
+    draw_logo(cols);
+
+    int logo_start = (cols - 70) / 2;
+    printf("\033[%d;%dH\033[37mConfiguring system...\033[0m", 10, logo_start);
+    printf("\033[%d;%dH\033[90m(Logging to /tmp/tonarchy-install.log)\033[0m", 11, logo_start);
+    fflush(stdout);
+
+    system("echo '=== Tonarchy Installation Log ===' > /tmp/tonarchy-install.log");
+    system("date >> /tmp/tonarchy-install.log");
+
+    if (system("genfstab -U /mnt >> /mnt/etc/fstab 2>> /tmp/tonarchy-install.log") != 0) {
+        show_message("Failed to generate fstab - check /tmp/tonarchy-install.log");
+        return 0;
+    }
+
+    snprintf(cmd, sizeof(cmd),
+        "arch-chroot /mnt /bin/bash -c '\n"
+        "ln -sf /usr/share/zoneinfo/%s /etc/localtime\n"
+        "hwclock --systohc\n"
+        "echo \"en_US.UTF-8 UTF-8\" >> /etc/locale.gen\n"
+        "locale-gen\n"
+        "echo \"LANG=en_US.UTF-8\" > /etc/locale.conf\n"
+        "echo \"KEYMAP=%s\" > /etc/vconsole.conf\n"
+        "echo \"%s\" > /etc/hostname\n"
+        "cat > /etc/hosts <<EOF\n"
+        "127.0.0.1   localhost\n"
+        "::1         localhost\n"
+        "127.0.1.1   %s.localdomain %s\n"
+        "EOF\n"
+        "useradd -m -G wheel -s /bin/bash %s\n"
+        "echo \"%s:%s\" | chpasswd\n"
+        "echo \"root:%s\" | chpasswd\n"
+        "sed -i \"s/^# %%wheel ALL=(ALL:ALL) ALL/%%wheel ALL=(ALL:ALL) ALL/\" /etc/sudoers\n"
+        "systemctl enable NetworkManager\n"
+        "%s"
+        "' >> /tmp/tonarchy-install.log 2>&1",
+        timezone, keyboard, hostname, hostname, hostname,
+        username, username, password, password,
+        use_dm ? "systemctl enable lightdm\n" : "");
+
+    system("echo '=== Running configure_system ===' >> /tmp/tonarchy-install.log");
+    if (system(cmd) != 0) {
+        show_message("Failed to configure system - check /tmp/tonarchy-install.log");
+        return 0;
+    }
+
+    show_message("System configured successfully!");
+    return 1;
+}
+
+static int install_bootloader(const char *disk) {
+    char cmd[2048];
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+
+    clear_screen();
+    draw_logo(cols);
+
+    int logo_start = (cols - 70) / 2;
+    printf("\033[%d;%dH\033[37mInstalling bootloader...\033[0m", 10, logo_start);
+    fflush(stdout);
+
+    snprintf(cmd, sizeof(cmd),
+        "arch-chroot /mnt /bin/bash -c '\n"
+        "bootctl install\n"
+        "cat > /boot/loader/loader.conf <<EOF\n"
+        "default arch.conf\n"
+        "timeout 3\n"
+        "console-mode max\n"
+        "editor no\n"
+        "EOF\n"
+        "cat > /boot/loader/entries/arch.conf <<EOF\n"
+        "title   Tonarchy\n"
+        "linux   /vmlinuz-linux\n"
+        "initrd  /initramfs-linux.img\n"
+        "options root=/dev/%s3 rw\n"
+        "EOF\n"
+        "'",
+        disk);
+
+    if (system(cmd) != 0) {
+        show_message("Failed to install bootloader");
+        return 0;
+    }
+
+    show_message("Bootloader installed successfully!");
+    return 1;
+}
+
+static int configure_cinnamon_keybinds(const char *username) {
+    char cmd[4096];
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+
+    clear_screen();
+    draw_logo(cols);
+
+    int logo_start = (cols - 70) / 2;
+    printf("\033[%d;%dH\033[37mConfiguring Cinnamon keybinds...\033[0m", 10, logo_start);
+    fflush(stdout);
+
+    snprintf(cmd, sizeof(cmd),
+        "arch-chroot /mnt sudo -u %s dbus-run-session bash -c '\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom0/binding \"[\\\"<Super>Return\\\"]\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom0/command \"\\\"alacritty\\\"\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom0/name \"\\\"Terminal\\\"\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom1/binding \"[\\\"<Super>b\\\"]\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom1/command \"\\\"firefox\\\"\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom1/name \"\\\"Browser\\\"\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom2/binding \"[\\\"<Super>e\\\"]\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom2/command \"\\\"nemo\\\"\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom2/name \"\\\"File Manager\\\"\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/custom-list \"[\\\"custom0\\\", \\\"custom1\\\", \\\"custom2\\\"]\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/wm/close \"[\\\"<Super>q\\\", \\\"<Alt>F4\\\"]\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/wm/toggle-fullscreen \"[\\\"<Super>f\\\"]\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/wm/push-tile-left \"[\\\"<Super>Left\\\"]\"\n"
+        "dconf write /org/cinnamon/desktop/keybindings/wm/push-tile-right \"[\\\"<Super>Right\\\"]\"\n"
+        "'",
+        username);
+
+    if (system(cmd) != 0) {
+        show_message("Warning: Failed to configure keybinds (can be done manually)");
+        return 1;
+    }
+
+    show_message("Cinnamon keybinds configured!");
+    return 1;
+}
+
+static int install_suckless_tools(const char *username) {
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+
+    clear_screen();
+    draw_logo(cols);
+
+    int logo_start = (cols - 70) / 2;
+    printf("\033[%d;%dH\033[37mInstalling suckless tools (dwm, st, dmenu)...\033[0m", 10, logo_start);
+    printf("\033[%d;%dH\033[37mCloning and building from source...\033[0m", 11, logo_start);
+    fflush(stdout);
+
+    // Copy wallpaper to /mnt/tmp first
+    system("cp walls/wall1.jpg /mnt/tmp/wall1.jpg 2>/dev/null");
+
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+        "arch-chroot /mnt /bin/bash -c '\n"
+        "cd /home/%s\n"
+        "sudo -u %s git clone https://github.com/tonybanters/dwm\n"
+        "sudo -u %s git clone https://github.com/tonybanters/st\n"
+        "sudo -u %s git clone https://github.com/tonybanters/dmenu\n"
+        "cd dwm && make clean install\n"
+        "cd ../st && make clean install\n"
+        "cd ../dmenu && make clean install\n"
+        "cd /home/%s\n"
+        "sudo -u %s mkdir -p .config walls\n"
+        "mv /tmp/wall1.jpg /home/%s/walls/wall1.jpg 2>/dev/null || true\n"
+        "chown %s:%s /home/%s/walls/wall1.jpg 2>/dev/null || true\n"
+        "echo \"xwallpaper --zoom \\$HOME/walls/wall1.jpg &\" > /home/%s/.xinitrc\n"
+        "echo \"exec dwm\" >> /home/%s/.xinitrc\n"
+        "chown %s:%s /home/%s/.xinitrc\n"
+        "chmod +x /home/%s/.xinitrc\n"
+        "echo \"if [ -z \\$DISPLAY ] && [ \\$XDG_VTNR = 1 ]; then\" > /home/%s/.bash_profile\n"
+        "echo \"  exec startx\" >> /home/%s/.bash_profile\n"
+        "echo \"fi\" >> /home/%s/.bash_profile\n"
+        "chown %s:%s /home/%s/.bash_profile\n"
+        "mkdir -p /etc/systemd/system/getty@tty1.service.d\n"
+        "echo \"[Service]\" > /etc/systemd/system/getty@tty1.service.d/autologin.conf\n"
+        "echo \"ExecStart=\" >> /etc/systemd/system/getty@tty1.service.d/autologin.conf\n"
+        "echo \"ExecStart=-/sbin/agetty -o \\\"-p -f -- \\\\\\\\u\\\" --noclear --autologin %s %%I \\$TERM\" >> /etc/systemd/system/getty@tty1.service.d/autologin.conf\n"
+        "'",
+        username, username, username, username, username, username,
+        username, username, username, username, username, username,
+        username, username, username, username, username, username,
+        username, username, username, username, username);
+
+    if (system(cmd) != 0) {
+        show_message("Warning: Failed to install suckless tools (can be done manually)");
+        return 1;
+    }
+
+    show_message("Suckless tools installed successfully!");
+    return 1;
+}
+
 int main(void) {
     char username[256] = "";
     char password[256] = "";
@@ -702,9 +1003,9 @@ int main(void) {
     }
 
     const char *levels[] = {
-        "Beginner (We'll pick everything for you.)",
-        "Intermediate (choose desktop & tools)",
-        "Advanced (full customization)"
+        "Beginner (Cinnamon desktop - perfect for starters)",
+        "Tony-Suckless (dwm + minimal setup)",
+        "Expert (Coming soon...)"
     };
 
     int level = select_from_menu(levels, 3);
@@ -717,14 +1018,93 @@ int main(void) {
         return 1;
     }
 
-    clear_screen();
-    printf("Installation would proceed with:\n");
-    printf("Username: %s\n", username);
-    printf("Hostname: %s\n", hostname);
-    printf("Keyboard: %s\n", keyboard);
-    printf("Timezone: %s\n", timezone);
-    printf("Level: %s\n", levels[level]);
-    printf("Disk: /dev/%s\n", disk);
+    if (level == 0) {
+        if (!partition_disk(disk)) {
+            return 1;
+        }
+
+        if (!install_packages("packages/beginner.txt")) {
+            return 1;
+        }
+
+        if (!configure_system(username, password, hostname, keyboard, timezone, disk, 1)) {
+            return 1;
+        }
+
+        if (!install_bootloader(disk)) {
+            return 1;
+        }
+
+        configure_cinnamon_keybinds(username);
+
+        clear_screen();
+        int rows, cols;
+        get_terminal_size(&rows, &cols);
+        draw_logo(cols);
+
+        int logo_start = (cols - 70) / 2;
+        printf("\033[%d;%dH\033[1;32mInstallation complete!\033[0m", 10, logo_start);
+        printf("\033[%d;%dH\033[37mYou can now reboot into your new system.\033[0m", 12, logo_start);
+        printf("\033[%d;%dH\033[37mPress any key to exit...\033[0m", 14, logo_start);
+        fflush(stdout);
+
+        enable_raw_mode();
+        char c;
+        read(STDIN_FILENO, &c, 1);
+        disable_raw_mode();
+    } else if (level == 1) {
+        // Tony-Suckless mode
+        if (!partition_disk(disk)) {
+            return 1;
+        }
+
+        if (!install_packages("packages/suckless.txt")) {
+            return 1;
+        }
+
+        if (!configure_system(username, password, hostname, keyboard, timezone, disk, 0)) {
+            return 1;
+        }
+
+        if (!install_bootloader(disk)) {
+            return 1;
+        }
+
+        install_suckless_tools(username);
+
+        clear_screen();
+        int rows, cols;
+        get_terminal_size(&rows, &cols);
+        draw_logo(cols);
+
+        int logo_start = (cols - 70) / 2;
+        printf("\033[%d;%dH\033[1;32mInstallation complete!\033[0m", 10, logo_start);
+        printf("\033[%d;%dH\033[37mYou can now reboot into your new system.\033[0m", 12, logo_start);
+        printf("\033[%d;%dH\033[37mPress any key to exit...\033[0m", 14, logo_start);
+        fflush(stdout);
+
+        enable_raw_mode();
+        char c;
+        read(STDIN_FILENO, &c, 1);
+        disable_raw_mode();
+    } else {
+        // Expert mode - coming soon
+        clear_screen();
+        int rows, cols;
+        get_terminal_size(&rows, &cols);
+        draw_logo(cols);
+
+        int logo_start = (cols - 70) / 2;
+        printf("\033[%d;%dH\033[1;33mExpert mode coming soon!\033[0m", 10, logo_start);
+        printf("\033[%d;%dH\033[37mThis mode will allow full customization of your installation.\033[0m", 12, logo_start);
+        printf("\033[%d;%dH\033[37mPress any key to exit...\033[0m", 14, logo_start);
+        fflush(stdout);
+
+        enable_raw_mode();
+        char c;
+        read(STDIN_FILENO, &c, 1);
+        disable_raw_mode();
+    }
 
     return 0;
 }

@@ -15,17 +15,17 @@
         default = pkgs.mkShell {
           buildInputs = [
             pkgs.gcc
+            pkgs.glibc.static
             pkgs.gnumake
-            pkgs.ncurses.dev
-            pkgs.notcurses
-            pkgs.pkg-config
             pkgs.bear
+            pkgs.qemu_kvm
+            pkgs.OVMF
           ];
           shellHook = ''
             export PS1="(tonarchy-dev) $PS1"
             echo "tonarchy development environment"
             echo "Run 'make' to build"
-            echo "Run 'make -f Makefile.notcurses && ./notcurses_demo' to see notcurses demo"
+            echo "Run './vm-test [iso-path]' to test an ISO in qemu"
           '';
         };
       });
