@@ -2,6 +2,7 @@
 #define TYPES_H
 
 #include <stdbool.h>
+#include <sys/types.h>
 
 typedef enum {
     LEVEL_BEGINNER,
@@ -34,5 +35,30 @@ typedef struct {
     bool install_dev_tools;
     bool install_gaming;
 } install_config;
+
+typedef struct {
+    const char *repo_url;
+    const char *name;
+    const char *build_dir;
+} GitRepo;
+
+typedef struct {
+    const char *filename;
+    const char *content;
+    mode_t permissions;
+} DotFile;
+
+typedef struct {
+    const char *key;
+    const char *value;
+} ConfigEntry;
+
+typedef struct {
+    const char *service_name;
+    const char *drop_in_dir;
+    const char *drop_in_file;
+    ConfigEntry *entries;
+    size_t entry_count;
+} SystemdOverride;
 
 #endif

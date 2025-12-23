@@ -6,6 +6,9 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <ctype.h>
+#include "logger.h"
+#include "chroot_helper.h"
+#include "types.h"
 
 typedef struct {
     char *cinnamon_package;
@@ -817,11 +820,16 @@ static int install_packages(const char *package_list) {
     return 1;
 }
 
-static int configure_system(const char *username, const char *password,
-                           const char *hostname, const char *keyboard,
-                           const char *timezone, const char *disk, int use_dm) {
+static int configure_system(
+        const char *username,
+        const char *password,
+        const char *hostname,
+        const char *keyboard,
+        const char *timezone,
+        const char *disk,
+        int use_dm
+    ) {
     (void)disk;
-    char cmd[4096];
     int rows, cols;
     get_terminal_size(&rows, &cols);
 
@@ -833,45 +841,93 @@ static int configure_system(const char *username, const char *password,
     printf("\033[%d;%dH\033[90m(Logging to /tmp/tonarchy-install.log)\033[0m", 11, logo_start);
     fflush(stdout);
 
-    system("echo '=== Tonarchy Installation Log ===' > /tmp/tonarchy-install.log");
-    system("date >> /tmp/tonarchy-install.log");
+    LOG_INFO("Starting system configuration");
+    LOG_INFO("User: %s, Hostname: %s, Timezone: %s, Keyboard: %s", username, hostname, timezone, keyboard);
 
-    if (system("genfstab -U /mnt >> /mnt/etc/fstab 2>> /tmp/tonarchy-install.log") != 0) {
-        show_message("Failed to generate fstab - check /tmp/tonarchy-install.log");
-        return 0;
+    CHECK_OR_FAIL(
+        system("genfstab -U /mnt >> /mnt/etc/fstab 2>> /tmp/tonarchy-install.log") == 0,
+        "Failed to generate fstab - check /tmp/tonarchy-install.log"
+    );
+
+    CHECK_OR_FAIL(
+        chroot_exec_fmt("ln -sf /usr/share/zoneinfo/%s /etc/localtime", timezone),
+        "Failed to configure timezone"
+    );
+
+    if (!chroot_exec("hwclock --systohc")) {
+        LOG_WARN("Failed to set hardware clock");
     }
 
-    snprintf(cmd, sizeof(cmd),
-        "arch-chroot /mnt /bin/bash -c '\n"
-        "ln -sf /usr/share/zoneinfo/%s /etc/localtime\n"
-        "hwclock --systohc\n"
-        "echo \"en_US.UTF-8 UTF-8\" >> /etc/locale.gen\n"
-        "locale-gen\n"
-        "echo \"LANG=en_US.UTF-8\" > /etc/locale.conf\n"
-        "echo \"KEYMAP=%s\" > /etc/vconsole.conf\n"
-        "echo \"%s\" > /etc/hostname\n"
-        "cat > /etc/hosts <<EOF\n"
-        "127.0.0.1   localhost\n"
-        "::1         localhost\n"
-        "127.0.1.1   %s.localdomain %s\n"
-        "EOF\n"
-        "useradd -m -G wheel -s /bin/bash %s\n"
-        "echo \"%s:%s\" | chpasswd\n"
-        "echo \"root:%s\" | chpasswd\n"
-        "echo \"%%wheel ALL=(ALL:ALL) ALL\" >> /etc/sudoers\n"
-        "systemctl enable NetworkManager\n"
-        "%s"
-        "' >> /tmp/tonarchy-install.log 2>&1",
-        timezone, keyboard, hostname, hostname, hostname,
-        username, username, password, password,
-        use_dm ? "systemctl enable lightdm\n" : "");
+    CHECK_OR_FAIL(
+        write_file("/mnt/etc/locale.gen", "en_US.UTF-8 UTF-8\n"),
+        "Failed to write locale.gen"
+    );
 
-    system("echo '=== Running configure_system ===' >> /tmp/tonarchy-install.log");
-    if (system(cmd) == -1) {
-        show_message("Failed to configure system - check /tmp/tonarchy-install.log");
-        return 0;
+    CHECK_OR_FAIL(
+        chroot_exec("locale-gen"),
+        "Failed to generate locales"
+    );
+
+    CHECK_OR_FAIL(
+        write_file("/mnt/etc/locale.conf", "LANG=en_US.UTF-8\n"),
+        "Failed to write locale.conf"
+    );
+
+    CHECK_OR_FAIL(
+        write_file_fmt("/mnt/etc/vconsole.conf", "KEYMAP=%s\n", keyboard),
+        "Failed to write vconsole.conf"
+    );
+
+    CHECK_OR_FAIL(
+        write_file_fmt("/mnt/etc/hostname", "%s\n", hostname),
+        "Failed to write hostname"
+    );
+
+    char hosts_content[512];
+    snprintf(hosts_content, sizeof(hosts_content),
+             "127.0.0.1   localhost\n"
+             "::1         localhost\n"
+             "127.0.1.1   %s.localdomain %s\n",
+             hostname, hostname);
+
+    CHECK_OR_FAIL(
+        write_file("/mnt/etc/hosts", hosts_content),
+        "Failed to write hosts file"
+    );
+
+    CHECK_OR_FAIL(
+        chroot_exec_fmt("useradd -m -G wheel -s /bin/bash %s", username),
+        "Failed to create user"
+    );
+
+    CHECK_OR_FAIL(
+        chroot_exec_fmt("echo '%s:%s' | chpasswd", username, password),
+        "Failed to set password"
+    );
+
+    CHECK_OR_FAIL(
+        chroot_exec_fmt("echo 'root:%s' | chpasswd", password),
+        "Failed to set root password"
+    );
+
+    CHECK_OR_FAIL(
+        chroot_exec("echo '%wheel ALL=(ALL:ALL) ALL' >> /etc/sudoers"),
+        "Failed to configure sudo"
+    );
+
+    CHECK_OR_FAIL(
+        chroot_exec("systemctl enable NetworkManager"),
+        "Failed to enable NetworkManager"
+    );
+
+    if (use_dm) {
+        CHECK_OR_FAIL(
+            chroot_exec("systemctl enable lightdm"),
+            "Failed to enable display manager"
+        );
     }
 
+    LOG_INFO("System configuration completed successfully");
     show_message("System configured successfully!");
     return 1;
 }
@@ -967,43 +1023,97 @@ static int install_suckless_tools(const char *username) {
     printf("\033[%d;%dH\033[37mCloning and building from source...\033[0m", 11, logo_start);
     fflush(stdout);
 
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd),
-        "arch-chroot /mnt /bin/bash -c '\n"
-        "cd /home/%s\n"
-        "sudo -u %s git clone https://github.com/tonybanters/dwm\n"
-        "sudo -u %s git clone https://github.com/tonybanters/st\n"
-        "sudo -u %s git clone https://github.com/tonybanters/dmenu\n"
-        "cd dwm && make clean install\n"
-        "cd ../st && make clean install\n"
-        "cd ../dmenu && make clean install\n"
-        "cd /home/%s\n"
-        "echo \"exec dwm\" >> /home/%s/.xinitrc\n"
-        "chown %s:%s /home/%s/.xinitrc\n"
-        "chmod +x /home/%s/.xinitrc\n"
-        "echo \"if [ -z \\$DISPLAY ] && [ \\$XDG_VTNR = 1 ]; then\" > /home/%s/.bash_profile\n"
-        "echo \"  exec startx\" >> /home/%s/.bash_profile\n"
-        "echo \"fi\" >> /home/%s/.bash_profile\n"
-        "chown %s:%s /home/%s/.bash_profile\n"
-        "mkdir -p /etc/systemd/system/getty@tty1.service.d\n"
-        "echo \"[Service]\" > /etc/systemd/system/getty@tty1.service.d/autologin.conf\n"
-        "echo \"ExecStart=\" >> /etc/systemd/system/getty@tty1.service.d/autologin.conf\n"
-        "echo \"ExecStart=-/sbin/agetty -o \\\"-p -f -- \\\\\\\\u\\\" --noclear --autologin %s %%I \\$TERM\" >> /etc/systemd/system/getty@tty1.service.d/autologin.conf\n"
-        "'",
-        username, username, username, username, username, username,
-        username, username, username, username, username, username,
-        username, username, username, username, username);
+    LOG_INFO("Starting suckless tools installation for user: %s", username);
 
-    if (system(cmd) == -1) {
-        show_message("Warning: Failed to install suckless tools (can be done manually)");
-        return 1;
+    GitRepo repos[] = {
+        {"https://github.com/tonybanters/dwm", "dwm", "/home/%s/dwm"},
+        {"https://github.com/tonybanters/st", "st", "/home/%s/st"},
+        {"https://github.com/tonybanters/dmenu", "dmenu", "/home/%s/dmenu"},
+    };
+
+    char home_dir[256];
+    snprintf(home_dir, sizeof(home_dir), "/home/%s", username);
+
+    if (!chroot_exec_fmt("cd %s", home_dir)) {
+        LOG_ERROR("Failed to change to user home directory");
+        show_message("Failed to install suckless tools");
+        return 0;
     }
 
+    for (size_t i = 0; i < sizeof(repos) / sizeof(repos[0]); i++) {
+        char dest_path[512];
+        snprintf(dest_path, sizeof(dest_path), repos[i].build_dir, username);
+
+        if (!git_clone_as_user(username, repos[i].repo_url, dest_path)) {
+            LOG_ERROR("Failed to clone %s", repos[i].name);
+            show_message("Failed to clone repositories");
+            return 0;
+        }
+
+        if (!make_clean_install(dest_path)) {
+            LOG_ERROR("Failed to build %s", repos[i].name);
+            show_message("Failed to build suckless tools");
+            return 0;
+        }
+    }
+
+    DotFile dotfiles[] = {
+        {
+            ".xinitrc",
+            "exec dwm\n",
+            0755
+        },
+        {
+            ".bash_profile",
+            "if [ -z $DISPLAY ] && [ $XDG_VTNR = 1 ]; then\n"
+            "  exec startx\n"
+            "fi\n",
+            0644
+        }
+    };
+
+    for (size_t i = 0; i < sizeof(dotfiles) / sizeof(dotfiles[0]); i++) {
+        if (!create_user_dotfile(username, &dotfiles[i])) {
+            LOG_ERROR("Failed to create dotfile: %s", dotfiles[i].filename);
+            show_message("Failed to create dotfiles");
+            return 0;
+        }
+    }
+
+    char autologin_exec[512];
+    snprintf(autologin_exec, sizeof(autologin_exec),
+             "ExecStart=-/sbin/agetty -o \"-p -f -- \\\\u\" --noclear --autologin %s %%I $TERM",
+             username);
+
+    ConfigEntry autologin_entries[] = {
+        {"[Service]", ""},
+        {"ExecStart", ""},
+        {autologin_exec, ""}
+    };
+
+    SystemdOverride autologin = {
+        "getty@tty1.service",
+        "getty@tty1.service.d",
+        "autologin.conf",
+        autologin_entries,
+        3
+    };
+
+    if (!setup_systemd_override(&autologin)) {
+        LOG_ERROR("Failed to setup autologin");
+        show_message("Failed to setup autologin");
+        return 0;
+    }
+
+    LOG_INFO("Suckless tools installation completed successfully");
     show_message("Suckless tools installed successfully!");
     return 1;
 }
 
 int main(void) {
+    logger_init("/tmp/tonarchy-install.log");
+    LOG_INFO("Tonarchy installer started");
+
     char username[256] = "";
     char password[256] = "";
     char confirmed_password[256] = "";
@@ -1012,6 +1122,7 @@ int main(void) {
     char timezone[256] = "";
 
     if (!get_form_input(username, password, confirmed_password, hostname, keyboard, timezone)) {
+        logger_close();
         return 1;
     }
 
@@ -1023,14 +1134,23 @@ int main(void) {
 
     int level = select_from_menu(levels, 3);
     if (level < 0) {
+        LOG_INFO("Installation cancelled by user at level selection");
+        logger_close();
         return 1;
     }
+
+    LOG_INFO("Installation level selected: %d", level);
 
     char disk[64] = "";
     if (!select_disk(disk)) {
+        LOG_INFO("Installation cancelled by user at disk selection");
+        logger_close();
         return 1;
     }
 
+    LOG_INFO("Selected disk: %s", disk);
+
+    // Beginner mode
     if (level == 0) {
         Packages pkg = {0};
         sserror(partition_disk(disk));
@@ -1102,5 +1222,7 @@ int main(void) {
         disable_raw_mode();
     }
 
+    LOG_INFO("Tonarchy installer finished");
+    logger_close();
     return 0;
 }

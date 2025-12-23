@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c23 -Wall -Wextra -O2 -Iinclude
+CFLAGS = -std=c23 -Wall -Wextra -O2 -I$(INC_DIR)
 LDFLAGS =
 STATIC_LDFLAGS = -static
 
