@@ -1,36 +1,233 @@
-#define _POSIX_C_SOURCE 200809L
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <termios.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-#include <ctype.h>
-#include "logger.h"
-#include "chroot_helper.h"
-#include "types.h"
+#include "tonarchy.h"
 
-typedef struct {
-    char *cinnamon_package;
-    char *suckless_package;
-} Packages;
+static FILE *log_file = NULL;
+static const char *level_strings[] = {"DEBUG", "INFO", "WARN", "ERROR"};
+static struct termios orig_termios;
 
-void set_cinnamon_package(Packages *pkg) {
-    pkg->cinnamon_package = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo cinnamon cinnamon-translations nemo nemo-fileroller gnome-terminal lightdm lightdm-gtk-greeter file-roller firefox alacritty vlc evince eog gedit";
-}
-
-void set_suckless_package(Packages *pkg) {
-    pkg->suckless_package = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr libx11 libxft libxinerama firefox picom xclip xwallpaper ttf-jetbrains-mono-nerd slock maim rofi alsa-utils pulseaudio pulseaudio-alsa pavucontrol";
-}
-
-void sserror(int x) {
-    if (x != 1){
-        exit(1);
+void logger_init(const char *log_path) {
+    log_file = fopen(log_path, "a");
+    if (log_file) {
+        time_t now = time(NULL);
+        char *timestamp = ctime(&now);
+        timestamp[strlen(timestamp) - 1] = '\0';
+        fprintf(log_file, "\n=== Tonarchy Installation Log - %s ===\n", timestamp);
+        fflush(log_file);
     }
 }
 
+void logger_close(void) {
+    if (log_file) {
+        fclose(log_file);
+        log_file = NULL;
+    }
+}
 
-static struct termios orig_termios;
+void log_msg(LogLevel level, const char *fmt, ...) {
+    if (!log_file) return;
+
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+
+    fprintf(log_file, "[%02d:%02d:%02d] [%s] ",
+        t->tm_hour, t->tm_min, t->tm_sec, level_strings[level]);
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(log_file, fmt, args);
+    va_end(args);
+
+    fprintf(log_file, "\n");
+    fflush(log_file);
+}
+
+int write_file(const char *path, const char *content) {
+    LOG_INFO("Writing file: %s", path);
+    FILE *fp = fopen(path, "w");
+    if (!fp) {
+        LOG_ERROR("Failed to open file for writing: %s", path);
+        return 0;
+    }
+
+    if (fprintf(fp, "%s", content) < 0) {
+        LOG_ERROR("Failed to write to file: %s", path);
+        fclose(fp);
+        return 0;
+    }
+
+    fclose(fp);
+    LOG_DEBUG("Successfully wrote file: %s", path);
+    return 1;
+}
+
+int write_file_fmt(const char *path, const char *fmt, ...) {
+    char content[MAX_CMD_SIZE];
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(content, sizeof(content), fmt, args);
+    va_end(args);
+
+    return write_file(path, content);
+}
+
+int set_file_perms(const char *path, mode_t mode, const char *owner, const char *group) {
+    LOG_INFO("Setting permissions for %s: mode=%o owner=%s group=%s", path, mode, owner, group);
+
+    if (chmod(path, mode) != 0) {
+        LOG_ERROR("Failed to chmod %s", path);
+        return 0;
+    }
+
+    char chown_cmd[512];
+    if (strncmp(path, CHROOT_PATH, strlen(CHROOT_PATH)) == 0) {
+        const char *chroot_path = path + strlen(CHROOT_PATH);
+        snprintf(chown_cmd, sizeof(chown_cmd),
+            "arch-chroot %s chown %s:%s %s 2>> /tmp/tonarchy-install.log",
+            CHROOT_PATH, owner, group, chroot_path);
+    } else {
+        snprintf(chown_cmd, sizeof(chown_cmd), "chown %s:%s %s", owner, group, path);
+    }
+
+    if (system(chown_cmd) != 0) {
+        LOG_ERROR("Failed to chown %s", path);
+        return 0;
+    }
+
+    return 1;
+}
+
+int create_directory(const char *path, mode_t mode) {
+    LOG_INFO("Creating directory: %s", path);
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "mkdir -p %s", path);
+
+    if (system(cmd) != 0) {
+        LOG_ERROR("Failed to create directory: %s", path);
+        return 0;
+    }
+
+    if (chmod(path, mode) != 0) {
+        LOG_WARN("Failed to set permissions on directory: %s", path);
+    }
+
+    return 1;
+}
+
+int chroot_exec(const char *cmd) {
+    char full_cmd[MAX_CMD_SIZE];
+    snprintf(full_cmd, sizeof(full_cmd),
+        "arch-chroot %s /bin/bash -c '%s' >> /tmp/tonarchy-install.log 2>&1",
+        CHROOT_PATH, cmd);
+
+    LOG_INFO("Executing in chroot: %s", cmd);
+    LOG_DEBUG("Full command: %s", full_cmd);
+
+    int result = system(full_cmd);
+    if (result != 0) {
+        LOG_ERROR("Chroot command failed (exit %d): %s", result, cmd);
+        return 0;
+    }
+
+    LOG_DEBUG("Chroot command succeeded: %s", cmd);
+    return 1;
+}
+
+int chroot_exec_fmt(const char *fmt, ...) {
+    char cmd[MAX_CMD_SIZE];
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(cmd, sizeof(cmd), fmt, args);
+    va_end(args);
+
+    return chroot_exec(cmd);
+}
+
+int chroot_exec_as_user(const char *username, const char *cmd) {
+    char full_cmd[MAX_CMD_SIZE * 2];
+    snprintf(full_cmd, sizeof(full_cmd), "sudo -u %s %s", username, cmd);
+    return chroot_exec(full_cmd);
+}
+
+int chroot_exec_as_user_fmt(const char *username, const char *fmt, ...) {
+    char cmd[MAX_CMD_SIZE];
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(cmd, sizeof(cmd), fmt, args);
+    va_end(args);
+
+    return chroot_exec_as_user(username, cmd);
+}
+
+int git_clone_as_user(const char *username, const char *repo_url, const char *dest_path) {
+    LOG_INFO("Cloning %s to %s as user %s", repo_url, dest_path, username);
+    return chroot_exec_as_user_fmt(username, "git clone %s %s", repo_url, dest_path);
+}
+
+int make_clean_install(const char *build_dir) {
+    LOG_INFO("Building and installing from %s", build_dir);
+    return chroot_exec_fmt("cd %s && make clean install", build_dir);
+}
+
+int create_user_dotfile(const char *username, const DotFile *dotfile) {
+    char full_path[512];
+    snprintf(full_path, sizeof(full_path), "%s/home/%s/%s", CHROOT_PATH, username, dotfile->filename);
+
+    LOG_INFO("Creating dotfile %s for user %s", dotfile->filename, username);
+
+    if (!write_file(full_path, dotfile->content)) {
+        return 0;
+    }
+
+    if (!set_file_perms(full_path, dotfile->permissions, username, username)) {
+        return 0;
+    }
+
+    return 1;
+}
+
+int setup_systemd_override(const SystemdOverride *override) {
+    char dir_path[1024];
+    char file_path[2048];
+
+    snprintf(dir_path, sizeof(dir_path), "%s/etc/systemd/system/%s", CHROOT_PATH, override->drop_in_dir);
+    snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, override->drop_in_file);
+
+    LOG_INFO("Setting up systemd override: %s/%s", override->drop_in_dir, override->drop_in_file);
+
+    if (!create_directory(dir_path, 0755)) {
+        return 0;
+    }
+
+    FILE *fp = fopen(file_path, "w");
+    if (!fp) {
+        LOG_ERROR("Failed to create systemd override file: %s", file_path);
+        return 0;
+    }
+
+    for (size_t i = 0; i < override->entry_count; i++) {
+        fprintf(fp, "%s=%s\n", override->entries[i].key, override->entries[i].value);
+    }
+
+    fclose(fp);
+    LOG_INFO("Successfully created systemd override");
+    return 1;
+}
+
+static void set_cinnamon_package(Packages *pkg) {
+    pkg->cinnamon_package = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo cinnamon cinnamon-translations nemo nemo-fileroller gnome-terminal lightdm lightdm-gtk-greeter file-roller firefox alacritty vlc evince eog gedit";
+}
+
+static void set_suckless_package(Packages *pkg) {
+    pkg->suckless_package = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr libx11 libxft libxinerama firefox picom xclip xwallpaper ttf-jetbrains-mono-nerd slock maim rofi alsa-utils pulseaudio pulseaudio-alsa pavucontrol";
+}
+
+static void sserror(int x) {
+    if (x != 1) {
+        exit(1);
+    }
+}
 
 static void disable_raw_mode(void) {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
@@ -143,7 +340,7 @@ static int select_from_menu(const char **items, int count) {
     return -1;
 }
 
-static void show_message(const char *message) {
+void show_message(const char *message) {
     int rows, cols;
     get_terminal_size(&rows, &cols);
 
@@ -724,79 +921,100 @@ static int partition_disk(const char *disk) {
     printf("\033[%d;%dH\033[37mPartitioning /dev/%s...\033[0m", 10, logo_start, disk);
     fflush(stdout);
 
-    snprintf(cmd, sizeof(cmd), "wipefs -af /dev/%s 2>&1", disk);
+    LOG_INFO("Starting disk partitioning: /dev/%s", disk);
+
+    snprintf(cmd, sizeof(cmd), "wipefs -af /dev/%s 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to wipe disk: /dev/%s", disk);
         show_message("Failed to wipe disk");
         return 0;
     }
+    LOG_INFO("Wiped disk");
 
-    snprintf(cmd, sizeof(cmd), "sgdisk --zap-all /dev/%s 2>&1", disk);
+    snprintf(cmd, sizeof(cmd), "sgdisk --zap-all /dev/%s 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to zap disk: /dev/%s", disk);
         show_message("Failed to zap disk");
         return 0;
     }
+    LOG_INFO("Zapped disk");
 
     snprintf(cmd, sizeof(cmd),
         "sgdisk --clear "
         "--new=1:0:+1G --typecode=1:ef00 --change-name=1:EFI "
         "--new=2:0:+4G --typecode=2:8200 --change-name=2:swap "
         "--new=3:0:0 --typecode=3:8300 --change-name=3:root "
-        "/dev/%s 2>&1", disk);
+        "/dev/%s 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to create partitions on /dev/%s", disk);
         show_message("Failed to create partitions");
         return 0;
     }
+    LOG_INFO("Created partitions (EFI, swap, root)");
 
     printf("\033[%d;%dH\033[37mFormatting partitions...\033[0m", 11, logo_start);
     fflush(stdout);
 
-    snprintf(cmd, sizeof(cmd), "mkfs.fat -F32 /dev/%s1 2>&1", disk);
+    snprintf(cmd, sizeof(cmd), "mkfs.fat -F32 /dev/%s1 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to format EFI partition: /dev/%s1", disk);
         show_message("Failed to format EFI partition");
         return 0;
     }
+    LOG_INFO("Formatted EFI partition");
 
-    snprintf(cmd, sizeof(cmd), "mkswap /dev/%s2 2>&1", disk);
+    snprintf(cmd, sizeof(cmd), "mkswap /dev/%s2 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to format swap: /dev/%s2", disk);
         show_message("Failed to format swap partition");
         return 0;
     }
+    LOG_INFO("Formatted swap partition");
 
-    snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F /dev/%s3 2>&1", disk);
+    snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F /dev/%s3 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to format root: /dev/%s3", disk);
         show_message("Failed to format root partition");
         return 0;
     }
+    LOG_INFO("Formatted root partition");
 
     printf("\033[%d;%dH\033[37mMounting partitions...\033[0m", 12, logo_start);
     fflush(stdout);
 
-    snprintf(cmd, sizeof(cmd), "mount /dev/%s3 /mnt 2>&1", disk);
+    snprintf(cmd, sizeof(cmd), "mount /dev/%s3 /mnt 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to mount root: /dev/%s3", disk);
         show_message("Failed to mount root partition");
         return 0;
     }
+    LOG_INFO("Mounted root partition");
 
-    snprintf(cmd, sizeof(cmd), "mkdir -p /mnt/boot 2>&1");
+    snprintf(cmd, sizeof(cmd), "mkdir -p /mnt/boot 2>> /tmp/tonarchy-install.log");
     system(cmd);
 
-    snprintf(cmd, sizeof(cmd), "mount /dev/%s1 /mnt/boot 2>&1", disk);
+    snprintf(cmd, sizeof(cmd), "mount /dev/%s1 /mnt/boot 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to mount EFI: /dev/%s1", disk);
         show_message("Failed to mount EFI partition");
         return 0;
     }
+    LOG_INFO("Mounted EFI partition");
 
-    snprintf(cmd, sizeof(cmd), "swapon /dev/%s2 2>&1", disk);
+    snprintf(cmd, sizeof(cmd), "swapon /dev/%s2 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
+        LOG_ERROR("Failed to enable swap: /dev/%s2", disk);
         show_message("Failed to enable swap");
         return 0;
     }
+    LOG_INFO("Enabled swap");
+    LOG_INFO("Disk partitioning completed successfully");
 
     show_message("Disk prepared successfully!");
     return 1;
 }
 
-static int install_packages(const char *package_list) {
+static int install_packages_impl(const char *package_list) {
     int rows, cols;
     get_terminal_size(&rows, &cols);
 
@@ -808,19 +1026,25 @@ static int install_packages(const char *package_list) {
     printf("\033[%d;%dH\033[37mThis will take several minutes.\033[0m", 11, logo_start);
     fflush(stdout);
 
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "pacstrap -K /mnt %s", package_list);
+    LOG_INFO("Starting package installation");
+    LOG_INFO("Packages: %s", package_list);
 
-    if (system(cmd) != 0) {
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd), "pacstrap -K /mnt %s 2>> /tmp/tonarchy-install.log", package_list);
+
+    int result = system(cmd);
+    if (result != 0) {
+        LOG_ERROR("pacstrap failed with exit code %d", result);
         show_message("Failed to install packages");
         return 0;
     }
 
+    LOG_INFO("Package installation completed successfully");
     show_message("Packages installed successfully!");
     return 1;
 }
 
-static int configure_system(
+static int configure_system_impl(
         const char *username,
         const char *password,
         const char *hostname,
@@ -910,10 +1134,12 @@ static int configure_system(
         "Failed to set root password"
     );
 
+    create_directory("/mnt/etc/sudoers.d", 0750);
     CHECK_OR_FAIL(
-        chroot_exec("echo '%wheel ALL=(ALL:ALL) ALL' >> /etc/sudoers"),
+        write_file("/mnt/etc/sudoers.d/wheel", "%wheel ALL=(ALL:ALL) ALL\n"),
         "Failed to configure sudo"
     );
+    chmod("/mnt/etc/sudoers.d/wheel", 0440);
 
     CHECK_OR_FAIL(
         chroot_exec("systemctl enable NetworkManager"),
@@ -980,8 +1206,11 @@ static int configure_cinnamon_keybinds(const char *username) {
     draw_logo(cols);
 
     int logo_start = (cols - 70) / 2;
-    printf("\033[%d;%dH\033[37mConfiguring Cinnamon keybinds...\033[0m", 10, logo_start);
+    printf("\033[%d;%dH\033[37mConfiguring Cinnamon...\033[0m", 10, logo_start);
     fflush(stdout);
+
+    create_directory("/mnt/usr/share/wallpapers", 0755);
+    system("cp /usr/share/wallpapers/wall1.jpg /mnt/usr/share/wallpapers/wall1.jpg");
 
     snprintf(cmd, sizeof(cmd),
         "arch-chroot /mnt sudo -u %s dbus-run-session bash -c '\n"
@@ -999,6 +1228,8 @@ static int configure_cinnamon_keybinds(const char *username) {
         "dconf write /org/cinnamon/desktop/keybindings/wm/toggle-fullscreen \"[\\\"<Super>f\\\"]\"\n"
         "dconf write /org/cinnamon/desktop/keybindings/wm/push-tile-left \"[\\\"<Super>Left\\\"]\"\n"
         "dconf write /org/cinnamon/desktop/keybindings/wm/push-tile-right \"[\\\"<Super>Right\\\"]\"\n"
+        "dconf write /org/cinnamon/desktop/background/picture-uri \"\\\"file:///usr/share/wallpapers/wall1.jpg\\\"\"\n"
+        "dconf write /org/cinnamon/desktop/background/picture-options \"\\\"zoom\\\"\"\n"
         "'",
         username);
 
@@ -1057,9 +1288,13 @@ static int install_suckless_tools(const char *username) {
         }
     }
 
+    create_directory("/mnt/usr/share/wallpapers", 0755);
+    system("cp /usr/share/wallpapers/wall1.jpg /mnt/usr/share/wallpapers/wall1.jpg");
+
     DotFile dotfiles[] = {
         {
             ".xinitrc",
+            "xwallpaper --zoom /usr/share/wallpapers/wall1.jpg &\n"
             "exec dwm\n",
             0755
         },
@@ -1150,14 +1385,13 @@ int main(void) {
 
     LOG_INFO("Selected disk: %s", disk);
 
-    // Beginner mode
     if (level == 0) {
         Packages pkg = {0};
         sserror(partition_disk(disk));
         set_cinnamon_package(&pkg);
 
-        sserror(install_packages(pkg.cinnamon_package));
-        sserror(configure_system(username, password, hostname, keyboard, timezone, disk, 1));
+        sserror(install_packages_impl(pkg.cinnamon_package));
+        sserror(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 1));
         sserror(install_bootloader(disk));
 
         configure_cinnamon_keybinds(username);
@@ -1169,21 +1403,22 @@ int main(void) {
 
         int logo_start = (cols - 70) / 2;
         printf("\033[%d;%dH\033[1;32mInstallation complete!\033[0m", 10, logo_start);
-        printf("\033[%d;%dH\033[37mYou can now reboot into your new system.\033[0m", 12, logo_start);
-        printf("\033[%d;%dH\033[37mPress any key to exit...\033[0m", 14, logo_start);
+        printf("\033[%d;%dH\033[37mPress Enter to reboot...\033[0m", 12, logo_start);
         fflush(stdout);
 
         enable_raw_mode();
         char c;
         read(STDIN_FILENO, &c, 1);
         disable_raw_mode();
+        system("eject -m /dev/sr0 2>/dev/null");
+        system("reboot");
     } else if (level == 1) {
         Packages pkg = {0};
         sserror(partition_disk(disk));
         set_suckless_package(&pkg);
 
-        sserror(install_packages(pkg.suckless_package));
-        sserror(configure_system(username, password, hostname, keyboard, timezone, disk, 0));
+        sserror(install_packages_impl(pkg.suckless_package));
+        sserror(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 0));
         sserror(install_bootloader(disk));
 
         install_suckless_tools(username);
@@ -1195,16 +1430,16 @@ int main(void) {
 
         int logo_start = (cols - 70) / 2;
         printf("\033[%d;%dH\033[1;32mInstallation complete!\033[0m", 10, logo_start);
-        printf("\033[%d;%dH\033[37mYou can now reboot into your new system.\033[0m", 12, logo_start);
-        printf("\033[%d;%dH\033[37mPress any key to exit...\033[0m", 14, logo_start);
+        printf("\033[%d;%dH\033[37mPress Enter to reboot...\033[0m", 12, logo_start);
         fflush(stdout);
 
         enable_raw_mode();
         char c;
         read(STDIN_FILENO, &c, 1);
         disable_raw_mode();
+        system("eject -m /dev/sr0 2>/dev/null");
+        system("reboot");
     } else {
-        // Expert mode - coming soon
         clear_screen();
         int rows, cols;
         get_terminal_size(&rows, &cols);
