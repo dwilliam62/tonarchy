@@ -4,202 +4,116 @@
 
 * Tonarchy
 
-A zero-dependency Arch Linux installer with a clean TUI built from scratch.
+A zero-dependency Arch Linux installer with a clean TUI built from scratch in C.
 
-(Alternative to OMARCHY, but way less bloated and intelligently programmed, and doesn't require a team of devs making 7500 ai slop bash scripts, but instead just basic c.)
-
-*Status:* Work In Progress - TUI complete, installation flow in development
+*Status:* Alpha - Beginner (XFCE) and Suckless modes functional, Wayland (Niri) coming soon
 
 * Philosophy
 
 Tonarchy is designed to take users from *zero to hero* with an opinionated beginner mode that sets up a complete, working Linux desktop environment. No choices, no confusion - just a solid foundation to start learning.
 
-For experienced users, intermediate and advanced modes provide full customization.
+For experienced users, the suckless mode provides a minimal dwm setup.
 
-* Features
+* Installation Modes
 
-** Three Installation Levels
+** Beginner (XFCE)
+Opinionated setup with XFCE desktop, essential applications, and sane defaults. Perfect for your first Linux installation.
 
-- *Beginner* :: We'll pick everything for you - opinionated setup with Cinnamon desktop, essential applications, and sane defaults. Perfect for your first Linux installation.
-- *Intermediate* :: Choose desktop environment and toolsets - guided customization with clear options.
-- *Advanced* :: Full control - pick your window manager, display server, packages, and dotfiles.
+** Tony-Suckless (dwm)
+Minimal setup with dwm, st, and dmenu built from source. For users who want a lightweight tiling experience.
 
-** Technical Highlights
+** Oxidized (Coming Soon)
+Wayland-native setup with Niri compositor. Modern, secure, and efficient.
+
+* Keybindings
+
+** General (XFCE Beginner Mode)
+
+| Key              | Action                |
+|------------------+-----------------------|
+| Super+Return     | Terminal (Alacritty)  |
+| Super+d          | App Launcher (Rofi)   |
+| Super+e          | File Manager (Thunar) |
+| Super+q          | Close Window          |
+| Super+f          | Maximize Window       |
+| Super+Shift+f    | Fullscreen            |
+
+** Window Management
+
+| Key              | Action                |
+|------------------+-----------------------|
+| Super+j          | Cycle Windows         |
+| Super+k          | Cycle Windows Reverse |
+| Super+Left       | Tile Left             |
+| Super+Right      | Tile Right            |
+| Super+Up         | Tile Up               |
+| Super+Down       | Tile Down             |
+
+** Workspaces
+
+| Key              | Action                |
+|------------------+-----------------------|
+| Super+1-9        | Switch to Workspace   |
+| Super+Shift+1-9  | Move Window to WS     |
+| Super+Tab        | Next Workspace        |
+| Super+Shift+Tab  | Previous Workspace    |
+
+* Technical Highlights
 
 - *Zero dependencies* :: Raw terminal control using termios + ANSI codes (no ncurses)
-- *Clean C23 codebase* :: Modern C with snake_case conventions
-- *Modular package lists* :: Easy to customize and maintain
+- *Single C file* :: Entire installer in ~1500 lines of C
 - *Fuzzy finding* :: fzf integration for keyboard and timezone selection
-- *Form-based input* :: Inline cursors with field validation
-
-* Current Status
-
-** Completed ✓
-
-- [X] TUI Framework (raw terminal control)
-- [X] ASCII logo display
-- [X] User input form (6 fields with validation)
-  - Username (alphanumeric)
-  - Password (hidden)
-  - Confirm Password (hidden with validation)
-  - Hostname (default: tonarchy)
-  - Keyboard (fzf fuzzy finder, default: us)
-  - Timezone (fzf fuzzy finder, required)
-- [X] Form confirmation system
-- [X] Level selection menu (j/k navigation)
-- [X] Disk selection with confirmation
-
-** In Progress
-
-- [ ] Disk partitioning and formatting
-- [ ] Pacstrap installation
-- [ ] System configuration (timezone, locale, users)
-- [ ] Bootloader installation
-- [ ] Desktop environment setup
-- [ ] Cinnamon keybindings configuration
-- [ ] Application defaults (Firefox with arkenfox)
+- *Static binary* :: Ships as a single static executable on the ISO
 
 * Requirements
 
 - UEFI system
 - Internet connection
-- Boot from Arch Linux ISO or custom Tonarchy ISO
-
-* Building
-
-#+BEGIN_SRC bash
-make clean && make
-./tonarchy
-#+END_SRC
-
-* Project Structure
-
-#+BEGIN_SRC
-tonarchy/
-├── src/
-│   └── main.c          # Main TUI and installer logic
-├── include/
-│   ├── installer.h     # Installation functions
-│   ├── tui.h          # Terminal UI functions
-│   ├── types.h        # Type definitions
-│   └── utils.h        # Utility functions
-├── packages/          # Modular package lists
-│   ├── base.txt
-│   ├── de_cinnamon.txt
-│   ├── de_gnome.txt
-│   ├── de_hyprland.txt
-│   ├── de_kde.txt
-│   ├── de_sway.txt
-│   ├── display_wayland.txt
-│   ├── display_xorg.txt
-│   └── suckless.txt
-├── configs/           # Configuration templates
-├── Makefile
-└── flake.nix         # Nix development shell
-#+END_SRC
-
-* Package Lists
-
-Package lists are modular text files in =packages/=:
-
-- =base.txt= :: Core system packages
-- =de_cinnamon.txt= :: Cinnamon desktop (beginner default)
-- =de_hyprland.txt= :: Hyprland + Wayland tools
-- =de_gnome.txt= :: GNOME desktop
-- =de_kde.txt= :: KDE Plasma
-- =de_sway.txt= :: Sway compositor
-- =display_wayland.txt= :: Wayland support packages
-- =display_xorg.txt= :: Xorg support packages
+- Boot from Tonarchy ISO
 
 * Beginner Mode Setup
 
-The beginner installation is completely opinionated and handles everything:
+The beginner installation handles everything:
 
 ** Desktop Environment
-- Cinnamon (familiar Windows-like interface)
-- LightDM display manager
-- Custom keybindings:
-  - Super+Return :: Terminal (Alacritty)
-  - Super+B :: Browser (Firefox)
-  - Super+E :: File Manager (Nemo)
-  - Super+Q :: Close window
-  - Super+F :: Fullscreen
+- XFCE with preconfigured keybindings
+- Autologin via getty (no display manager)
+- Adwaita-dark theme
 
 ** Applications
-- Firefox (with optional arkenfox user.js)
-- Zed editor (fully open source)
+- Firefox (with uBlock Origin, Dark Reader)
+- Neovim
 - Alacritty terminal
+- Thunar file manager
 - VLC media player
-- Nemo file manager
-- Xreader PDF viewer
-- Xviewer image viewer
+- Rofi launcher
 
 ** System Configuration
-- Locale: =en_US.UTF-8= (hardcoded for simplicity)
+- Locale: =en_US.UTF-8=
 - Timezone: User selected via fzf
-- Keyboard: User selected via fzf (default: us)
+- Keyboard: User selected via fzf
 - NetworkManager enabled
 - Sudo configured for wheel group
 
 ** Disk Layout
-- 1GB FAT32 EFI boot partition
+- 1GB FAT32 EFI partition
 - 4GB swap partition
-- Remaining space for ext4 root partition
+- Remaining space for ext4 root
 
-* Design Decisions
+* Roadmap
 
-** Why no ncurses?
-Zero dependencies means:
-- Minimal ISO size
-- Easier debugging
-- Full control over terminal behavior
-- No external library issues
+- [X] XFCE Beginner Mode
+- [X] Suckless Mode (dwm/st/dmenu)
+- [ ] Niri Wayland Mode
+- [ ] Encrypted disk support
+- [ ] Multi-disk configurations
 
-** Why fzf for selection?
-- 598 timezones require fuzzy search
-- Ergonomic keyboard layout selection
-- Minimal dependency (~1MB)
-- Fast and responsive
-
-** Why hardcode locale?
-- Simplifies installer UX
-- Most users use en_US.UTF-8
-- Easy to change post-install if needed
-
-** Why Cinnamon for beginners?
-- More Windows-like than KDE
-- Stable and mature
-- Familiar to Linux Mint users
-- Lower learning curve
-
-** Why Zed instead of VSCodium?
-- Fully open source (no marketplace issues)
-- Modern architecture
-- Clean Arch Linux package
-
-* Development
-
-** Language
-C23 with snake_case naming conventions
-
-** Build System
-Simple Makefile for compilation
-
-** Nix Development Shell
-=flake.nix= provides development environment:
+* Building
 
 #+BEGIN_SRC bash
-nix develop
+make
 #+END_SRC
-
-* Contributing
-
-This is a personal project in active development. Feel free to fork and customize for your own use.
 
 * License
 
-GNU General Public License (GPL)
-
-* Safety Note
-
-The installer will display clear warnings before any destructive operations. Currently, disk partitioning is not implemented, making the TUI safe to test without risk of data loss.
+GPL

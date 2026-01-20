@@ -1,8 +1,21 @@
 #include "tonarchy.h"
+#include <string.h>
 
 static FILE *log_file = NULL;
 static const char *level_strings[] = {"DEBUG", "INFO", "WARN", "ERROR"};
 static struct termios orig_termios;
+
+enum Install_Option {
+    BEGINNER = 0,
+    SUCKLESS = 1,
+    OXIDIZED = 2
+};
+
+static const char *XFCE_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xfce4 xfce4-goodies xfce4-session xfce4-whiskermenu-plugin thunar thunar-archive-plugin file-roller firefox alacritty vlc evince eog fastfetch rofi ttf-iosevka-nerd";
+
+static const char *SUCKLESS_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr libx11 libxft libxinerama firefox picom xclip xwallpaper ttf-jetbrains-mono-nerd slock maim rofi alsa-utils pulseaudio pulseaudio-alsa pavucontrol";
+
+static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit firefox alacritty vlc evince eog cargo ttf-iosevka-nerd";
 
 void logger_init(const char *log_path) {
     log_file = fopen(log_path, "a");
@@ -22,14 +35,20 @@ void logger_close(void) {
     }
 }
 
-void log_msg(LogLevel level, const char *fmt, ...) {
+void log_msg(Log_Level level, const char *fmt, ...) {
     if (!log_file) return;
 
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
 
-    fprintf(log_file, "[%02d:%02d:%02d] [%s] ",
-        t->tm_hour, t->tm_min, t->tm_sec, level_strings[level]);
+    fprintf(
+        log_file,
+        "[%02d:%02d:%02d] [%s] ",
+        t->tm_hour,
+        t->tm_min,
+        t->tm_sec,
+        level_strings[level]
+    );
 
     va_list args;
     va_start(args, fmt);
@@ -170,7 +189,7 @@ int make_clean_install(const char *build_dir) {
     return chroot_exec_fmt("cd %s && make clean install", build_dir);
 }
 
-int create_user_dotfile(const char *username, const DotFile *dotfile) {
+int create_user_dotfile(const char *username, const Dotfile *dotfile) {
     char full_path[512];
     snprintf(full_path, sizeof(full_path), "%s/home/%s/%s", CHROOT_PATH, username, dotfile->filename);
 
@@ -187,7 +206,7 @@ int create_user_dotfile(const char *username, const DotFile *dotfile) {
     return 1;
 }
 
-int setup_systemd_override(const SystemdOverride *override) {
+int setup_systemd_override(const Systemd_Override *override) {
     char dir_path[1024];
     char file_path[2048];
 
@@ -207,7 +226,11 @@ int setup_systemd_override(const SystemdOverride *override) {
     }
 
     for (size_t i = 0; i < override->entry_count; i++) {
-        fprintf(fp, "%s=%s\n", override->entries[i].key, override->entries[i].value);
+        if (override->entries[i].value[0] == '\0') {
+            fprintf(fp, "%s\n", override->entries[i].key);
+        } else {
+            fprintf(fp, "%s=%s\n", override->entries[i].key, override->entries[i].value);
+        }
     }
 
     fclose(fp);
@@ -215,19 +238,6 @@ int setup_systemd_override(const SystemdOverride *override) {
     return 1;
 }
 
-static void set_cinnamon_package(Packages *pkg) {
-    pkg->cinnamon_package = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo cinnamon cinnamon-translations nemo nemo-fileroller gnome-terminal lightdm lightdm-gtk-greeter file-roller firefox alacritty vlc evince eog gedit";
-}
-
-static void set_suckless_package(Packages *pkg) {
-    pkg->suckless_package = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr libx11 libxft libxinerama firefox picom xclip xwallpaper ttf-jetbrains-mono-nerd slock maim rofi alsa-utils pulseaudio pulseaudio-alsa pavucontrol";
-}
-
-static void sserror(int x) {
-    if (x != 1) {
-        exit(1);
-    }
-}
 
 static void disable_raw_mode(void) {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
@@ -355,6 +365,13 @@ void show_message(const char *message) {
     sleep(2);
 }
 
+typedef struct {
+    const char *label;
+    const char *value;
+    const char *default_display;
+    int is_password;
+} Tui_Field;
+
 static void draw_form(
         const char *username,
         const char *password,
@@ -373,91 +390,39 @@ static void draw_form(
     int logo_start = (cols - 70) / 2;
     int form_row = 10;
 
-    printf("\033[%d;%dH", form_row, logo_start);
-    printf("\033[37mSetup your system:\033[0m");
-
+    printf(ANSI_CURSOR_POS ANSI_WHITE "Setup your system:" ANSI_RESET, form_row, logo_start);
     form_row += 2;
 
-    if (current_field == 0) {
-        printf("\033[%d;%dH\033[1;34m>\033[0m ", form_row, logo_start);
-    } else {
-        printf("\033[%d;%dH  ", form_row, logo_start);
-    }
-    printf("\033[37mUsername: \033[0m");
-    if (strlen(username) > 0) {
-        printf("\033[32m%s\033[0m", username);
-    } else if (current_field != 0) {
-        printf("\033[90m[not set]\033[0m");
-    }
+    Tui_Field fields[] = {
+        {"Username",         username,           NULL,       0},
+        {"Password",         password,           NULL,       1},
+        {"Confirm Password", confirmed_password, NULL,       1},
+        {"Hostname",         hostname,           "tonarchy", 0},
+        {"Keyboard",         keyboard,           "us",       0},
+        {"Timezone",         timezone,           NULL,       0},
+    };
+    int num_fields = (int)(sizeof(fields) / sizeof(fields[0]));
 
-    form_row++;
+    for (int i = 0; i < num_fields; i++) {
+        printf(ANSI_CURSOR_POS, form_row + i, logo_start);
 
-    if (current_field == 1) {
-        printf("\033[%d;%dH\033[1;34m>\033[0m ", form_row, logo_start);
-    } else {
-        printf("\033[%d;%dH  ", form_row, logo_start);
-    }
-    printf("\033[37mPassword: \033[0m");
-    if (strlen(password) > 0) {
-        printf("\033[32m%s\033[0m", "********");
-    } else if (current_field != 1) {
-        printf("\033[90m[not set]\033[0m");
-    }
+        if (current_field == i) {
+            printf(ANSI_BLUE_BOLD ">" ANSI_RESET " ");
+        } else {
+            printf("  ");
+        }
 
-    form_row++;
+        printf(ANSI_WHITE "%s: " ANSI_RESET, fields[i].label);
 
-    if (current_field == 2) {
-        printf("\033[%d;%dH\033[1;34m>\033[0m ", form_row, logo_start);
-    } else {
-        printf("\033[%d;%dH  ", form_row, logo_start);
-    }
-    printf("\033[37mConfirm Password: \033[0m");
-    if (strlen(confirmed_password) > 0) {
-        printf("\033[32m%s\033[0m", "********");
-    } else if (current_field != 2) {
-        printf("\033[90m[not set]\033[0m");
-    }
-
-    form_row++;
-
-    if (current_field == 3) {
-        printf("\033[%d;%dH\033[1;34m>\033[0m ", form_row, logo_start);
-    } else {
-        printf("\033[%d;%dH  ", form_row, logo_start);
-    }
-    printf("\033[37mHostname: \033[0m");
-    if (strlen(hostname) > 0) {
-        printf("\033[32m%s\033[0m", hostname);
-    } else if (current_field != 3) {
-        printf("\033[90mtonarchy\033[0m");
-    }
-
-    form_row++;
-
-    if (current_field == 4) {
-        printf("\033[%d;%dH\033[1;34m>\033[0m ", form_row, logo_start);
-    } else {
-        printf("\033[%d;%dH  ", form_row, logo_start);
-    }
-    printf("\033[37mKeyboard: \033[0m");
-    if (strlen(keyboard) > 0) {
-        printf("\033[32m%s\033[0m", keyboard);
-    } else if (current_field != 4) {
-        printf("\033[90mus\033[0m");
-    }
-
-    form_row++;
-
-    if (current_field == 5) {
-        printf("\033[%d;%dH\033[1;34m>\033[0m ", form_row, logo_start);
-    } else {
-        printf("\033[%d;%dH  ", form_row, logo_start);
-    }
-    printf("\033[37mTimezone: \033[0m");
-    if (strlen(timezone) > 0) {
-        printf("\033[32m%s\033[0m", timezone);
-    } else if (current_field != 5) {
-        printf("\033[90m[not set]\033[0m");
+        if (strlen(fields[i].value) > 0) {
+            printf(ANSI_GREEN "%s" ANSI_RESET, fields[i].is_password ? "********" : fields[i].value);
+        } else if (current_field != i) {
+            if (fields[i].default_display) {
+                printf(ANSI_GRAY "%s" ANSI_RESET, fields[i].default_display);
+            } else {
+                printf(ANSI_GRAY "[not set]" ANSI_RESET);
+            }
+        }
     }
 
     fflush(stdout);
@@ -1146,6 +1111,11 @@ static int configure_system_impl(
         "Failed to enable NetworkManager"
     );
 
+    CHECK_OR_FAIL(
+        chroot_exec("systemctl enable dbus"),
+        "Failed to enable dbus"
+    );
+
     if (use_dm) {
         CHECK_OR_FAIL(
             chroot_exec("systemctl enable lightdm"),
@@ -1197,7 +1167,7 @@ static int install_bootloader(const char *disk) {
     return 1;
 }
 
-static int configure_cinnamon_keybinds(const char *username) {
+static int configure_xfce(const char *username) {
     char cmd[4096];
     int rows, cols;
     get_terminal_size(&rows, &cols);
@@ -1206,39 +1176,108 @@ static int configure_cinnamon_keybinds(const char *username) {
     draw_logo(cols);
 
     int logo_start = (cols - 70) / 2;
-    printf("\033[%d;%dH\033[37mConfiguring Cinnamon...\033[0m", 10, logo_start);
+    printf("\033[%d;%dH\033[37mConfiguring XFCE...\033[0m", 10, logo_start);
     fflush(stdout);
 
     create_directory("/mnt/usr/share/wallpapers", 0755);
     system("cp /usr/share/wallpapers/wall1.jpg /mnt/usr/share/wallpapers/wall1.jpg");
 
-    snprintf(cmd, sizeof(cmd),
-        "arch-chroot /mnt sudo -u %s dbus-run-session bash -c '\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom0/binding \"[\\\"<Super>Return\\\"]\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom0/command \"\\\"alacritty\\\"\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom0/name \"\\\"Terminal\\\"\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom1/binding \"[\\\"<Super>b\\\"]\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom1/command \"\\\"firefox\\\"\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom1/name \"\\\"Browser\\\"\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom2/binding \"[\\\"<Super>e\\\"]\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom2/command \"\\\"nemo\\\"\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/custom2/name \"\\\"File Manager\\\"\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/custom-list \"[\\\"custom0\\\", \\\"custom1\\\", \\\"custom2\\\"]\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/wm/close \"[\\\"<Super>q\\\", \\\"<Alt>F4\\\"]\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/wm/toggle-fullscreen \"[\\\"<Super>f\\\"]\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/wm/push-tile-left \"[\\\"<Super>Left\\\"]\"\n"
-        "dconf write /org/cinnamon/desktop/keybindings/wm/push-tile-right \"[\\\"<Super>Right\\\"]\"\n"
-        "dconf write /org/cinnamon/desktop/background/picture-uri \"\\\"file:///usr/share/wallpapers/wall1.jpg\\\"\"\n"
-        "dconf write /org/cinnamon/desktop/background/picture-options \"\\\"zoom\\\"\"\n"
-        "'",
-        username);
+    create_directory("/mnt/usr/share/tonarchy", 0755);
+    system("cp /usr/share/tonarchy/favicon.png /mnt/usr/share/tonarchy/favicon.png");
 
-    if (system(cmd) != 0) {
-        show_message("Warning: Failed to configure keybinds (can be done manually)");
-        return 1;
+    snprintf(cmd, sizeof(cmd), "/mnt/home/%s/.mozilla/firefox/default", username);
+    create_directory(cmd, 0755);
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/firefox/profile/* /mnt/home/%s/.mozilla/firefox/default/", username);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd), "cp /usr/share/tonarchy/firefox/profiles.ini /mnt/home/%s/.mozilla/firefox/", username);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd), "cp /usr/share/tonarchy/firefox/installs.ini /mnt/home/%s/.mozilla/firefox/", username);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.mozilla", username, username, username);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "/mnt/home/%s/.config", username);
+    create_directory(cmd, 0755);
+
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/xfce4 /mnt/home/%s/.config/xfce4", username);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/alacritty /mnt/home/%s/.config/alacritty", username);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/rofi /mnt/home/%s/.config/rofi", username);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config", username, username, username);
+    system(cmd);
+
+    char nvim_path[256];
+    snprintf(nvim_path, sizeof(nvim_path), "/home/%s/.config/nvim", username);
+    git_clone_as_user(username, "https://github.com/tonybanters/nvim", nvim_path);
+    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config/nvim", username, username, username);
+    system(cmd);
+
+    Dotfile dotfiles[] = {
+        {
+            ".xinitrc",
+            "exec startxfce4\n",
+            0755
+        },
+        {
+            ".bash_profile",
+            "if [ -z $DISPLAY ] && [ $XDG_VTNR = 1 ]; then\n"
+            "  exec startx\n"
+            "fi\n",
+            0644
+        },
+        {
+            ".bashrc",
+            "export PATH=\"$HOME/.local/bin:$PATH\"\n"
+            "export EDITOR=\"nvim\"\n"
+            "\n"
+            "alias ls='ls --color=auto'\n"
+            "alias la='ls -a'\n"
+            "alias ll='ls -la'\n"
+            "alias ..='cd ..'\n"
+            "alias ...='cd ../..'\n"
+            "alias grep='grep --color=auto'\n"
+            "\n"
+            "export PS1=\"\\[\\e[38;5;75m\\]\\u@\\h \\[\\e[38;5;113m\\]\\w \\[\\e[38;5;189m\\]\\$ \\[\\e[0m\\]\"\n",
+            0644
+        }
+    };
+
+    for (size_t i = 0; i < sizeof(dotfiles) / sizeof(dotfiles[0]); i++) {
+        if (!create_user_dotfile(username, &dotfiles[i])) {
+            LOG_ERROR("Failed to create dotfile: %s", dotfiles[i].filename);
+            return 0;
+        }
     }
 
-    show_message("Cinnamon keybinds configured!");
+    char autologin_exec[512];
+    snprintf(autologin_exec, sizeof(autologin_exec),
+             "ExecStart=-/sbin/agetty -o \"-p -f -- \\\\u\" --noclear --autologin %s %%I $TERM",
+             username);
+
+    Config_Entry autologin_entries[] = {
+        {"[Service]", ""},
+        {"ExecStart=", ""},
+        {autologin_exec, ""}
+    };
+
+    Systemd_Override autologin = {
+        "getty@tty1.service",
+        "getty@tty1.service.d",
+        "autologin.conf",
+        autologin_entries,
+        3
+    };
+
+    if (!setup_systemd_override(&autologin)) {
+        LOG_ERROR("Failed to setup autologin");
+        return 0;
+    }
+
     return 1;
 }
 
@@ -1256,7 +1295,7 @@ static int install_suckless_tools(const char *username) {
 
     LOG_INFO("Starting suckless tools installation for user: %s", username);
 
-    GitRepo repos[] = {
+    Git_Repo repos[] = {
         {"https://github.com/tonybanters/dwm", "dwm", "/home/%s/dwm"},
         {"https://github.com/tonybanters/st", "st", "/home/%s/st"},
         {"https://github.com/tonybanters/dmenu", "dmenu", "/home/%s/dmenu"},
@@ -1291,7 +1330,7 @@ static int install_suckless_tools(const char *username) {
     create_directory("/mnt/usr/share/wallpapers", 0755);
     system("cp /usr/share/wallpapers/wall1.jpg /mnt/usr/share/wallpapers/wall1.jpg");
 
-    DotFile dotfiles[] = {
+    Dotfile dotfiles[] = {
         {
             ".xinitrc",
             "xwallpaper --zoom /usr/share/wallpapers/wall1.jpg &\n"
@@ -1320,13 +1359,13 @@ static int install_suckless_tools(const char *username) {
              "ExecStart=-/sbin/agetty -o \"-p -f -- \\\\u\" --noclear --autologin %s %%I $TERM",
              username);
 
-    ConfigEntry autologin_entries[] = {
+    Config_Entry autologin_entries[] = {
         {"[Service]", ""},
-        {"ExecStart", ""},
+        {"ExecStart=", ""},
         {autologin_exec, ""}
     };
 
-    SystemdOverride autologin = {
+    Systemd_Override autologin = {
         "getty@tty1.service",
         "getty@tty1.service.d",
         "autologin.conf",
@@ -1362,9 +1401,9 @@ int main(void) {
     }
 
     const char *levels[] = {
-        "Beginner (Cinnamon desktop - perfect for starters)",
+        "Beginner (XFCE desktop - perfect for starters)",
         "Tony-Suckless (dwm + minimal setup)",
-        "Expert (Coming soon...)"
+        "Oxidized (OXWM Beta)"
     };
 
     int level = select_from_menu(levels, 3);
@@ -1385,60 +1424,18 @@ int main(void) {
 
     LOG_INFO("Selected disk: %s", disk);
 
-    if (level == 0) {
-        Packages pkg = {0};
-        sserror(partition_disk(disk));
-        set_cinnamon_package(&pkg);
-
-        sserror(install_packages_impl(pkg.cinnamon_package));
-        sserror(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 1));
-        sserror(install_bootloader(disk));
-
-        configure_cinnamon_keybinds(username);
-
-        clear_screen();
-        int rows, cols;
-        get_terminal_size(&rows, &cols);
-        draw_logo(cols);
-
-        int logo_start = (cols - 70) / 2;
-        printf("\033[%d;%dH\033[1;32mInstallation complete!\033[0m", 10, logo_start);
-        printf("\033[%d;%dH\033[37mPress Enter to reboot...\033[0m", 12, logo_start);
-        fflush(stdout);
-
-        enable_raw_mode();
-        char c;
-        read(STDIN_FILENO, &c, 1);
-        disable_raw_mode();
-        system("eject -m /dev/sr0 2>/dev/null");
-        system("reboot");
-    } else if (level == 1) {
-        Packages pkg = {0};
-        sserror(partition_disk(disk));
-        set_suckless_package(&pkg);
-
-        sserror(install_packages_impl(pkg.suckless_package));
-        sserror(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 0));
-        sserror(install_bootloader(disk));
-
+    if (level == BEGINNER) {
+        CHECK_OR_FAIL(partition_disk(disk), "Failed to partition disk");
+        CHECK_OR_FAIL(install_packages_impl(XFCE_PACKAGES), "Failed to install packages");
+        CHECK_OR_FAIL(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 0), "Failed to configure system");
+        CHECK_OR_FAIL(install_bootloader(disk), "Failed to install bootloader");
+        configure_xfce(username);
+    } else if (level == SUCKLESS) {
+        CHECK_OR_FAIL(partition_disk(disk), "Failed to partition disk");
+        CHECK_OR_FAIL(install_packages_impl(SUCKLESS_PACKAGES), "Failed to install packages");
+        CHECK_OR_FAIL(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 0), "Failed to configure system");
+        CHECK_OR_FAIL(install_bootloader(disk), "Failed to install bootloader");
         install_suckless_tools(username);
-
-        clear_screen();
-        int rows, cols;
-        get_terminal_size(&rows, &cols);
-        draw_logo(cols);
-
-        int logo_start = (cols - 70) / 2;
-        printf("\033[%d;%dH\033[1;32mInstallation complete!\033[0m", 10, logo_start);
-        printf("\033[%d;%dH\033[37mPress Enter to reboot...\033[0m", 12, logo_start);
-        fflush(stdout);
-
-        enable_raw_mode();
-        char c;
-        read(STDIN_FILENO, &c, 1);
-        disable_raw_mode();
-        system("eject -m /dev/sr0 2>/dev/null");
-        system("reboot");
     } else {
         clear_screen();
         int rows, cols;
@@ -1446,16 +1443,34 @@ int main(void) {
         draw_logo(cols);
 
         int logo_start = (cols - 70) / 2;
-        printf("\033[%d;%dH\033[1;33mExpert mode coming soon!\033[0m", 10, logo_start);
-        printf("\033[%d;%dH\033[37mThis mode will allow full customization of your installation.\033[0m", 12, logo_start);
-        printf("\033[%d;%dH\033[37mPress any key to exit...\033[0m", 14, logo_start);
+        printf("\033[%d;%dH\033[1;33mOXWM mode coming soon!\033[0m", 10, logo_start);
+        printf("\033[%d;%dH\033[37mPress any key to exit...\033[0m", 12, logo_start);
         fflush(stdout);
 
         enable_raw_mode();
         char c;
         read(STDIN_FILENO, &c, 1);
         disable_raw_mode();
+        logger_close();
+        return 0;
     }
+
+    clear_screen();
+    int rows, cols;
+    get_terminal_size(&rows, &cols);
+    draw_logo(cols);
+
+    int logo_start = (cols - 70) / 2;
+    printf("\033[%d;%dH\033[1;32mInstallation complete!\033[0m", 10, logo_start);
+    printf("\033[%d;%dH\033[37mPress Enter to reboot...\033[0m", 12, logo_start);
+    fflush(stdout);
+
+    enable_raw_mode();
+    char c;
+    read(STDIN_FILENO, &c, 1);
+    disable_raw_mode();
+    system("eject -m /dev/sr0 2>/dev/null");
+    system("reboot");
 
     LOG_INFO("Tonarchy installer finished");
     logger_close();

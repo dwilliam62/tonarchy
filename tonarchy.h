@@ -21,78 +21,52 @@
 #define CHROOT_PATH "/mnt"
 #define MAX_CMD_SIZE 4096
 
-typedef enum {
-    LEVEL_BEGINNER,
-    LEVEL_INTERMEDIATE,
-    LEVEL_ADVANCED
-} install_level;
-
-typedef enum {
-    DE_CINNAMON,
-    DE_HYPRLAND,
-    DE_GNOME,
-    DE_KDE,
-    DE_SWAY,
-    DE_NONE
-} desktop_env;
-
-typedef enum {
-    DISPLAY_WAYLAND,
-    DISPLAY_XORG,
-    DISPLAY_BOTH
-} display_server;
+#define ANSI_ESC           "\033["
+#define ANSI_RESET         ANSI_ESC "0m"
+#define ANSI_BOLD          ANSI_ESC "1m"
+#define ANSI_WHITE         ANSI_ESC "37m"
+#define ANSI_GREEN         ANSI_ESC "32m"
+#define ANSI_GRAY          ANSI_ESC "90m"
+#define ANSI_BLUE          ANSI_ESC "34m"
+#define ANSI_BLUE_BOLD     ANSI_ESC "1;34m"
+#define ANSI_CURSOR_POS    ANSI_ESC "%d;%dH"
 
 typedef enum {
     LOG_LEVEL_DEBUG,
     LOG_LEVEL_INFO,
     LOG_LEVEL_WARN,
     LOG_LEVEL_ERROR
-} LogLevel;
-
-typedef struct {
-    install_level level;
-    desktop_env de;
-    display_server display;
-    bool use_custom_dotfiles;
-    char dotfiles_url[512];
-    bool install_docker;
-    bool install_dev_tools;
-    bool install_gaming;
-} install_config;
+} Log_Level;
 
 typedef struct {
     const char *repo_url;
     const char *name;
     const char *build_dir;
-} GitRepo;
+} Git_Repo;
 
 typedef struct {
     const char *filename;
     const char *content;
     mode_t permissions;
-} DotFile;
+} Dotfile;
 
 typedef struct {
     const char *key;
     const char *value;
-} ConfigEntry;
+} Config_Entry;
 
 typedef struct {
     const char *service_name;
     const char *drop_in_dir;
     const char *drop_in_file;
-    ConfigEntry *entries;
+    Config_Entry *entries;
     size_t entry_count;
-} SystemdOverride;
+} Systemd_Override;
 
-typedef struct {
-    char *cinnamon_package;
-    char *suckless_package;
-} Packages;
 
 void logger_init(const char *log_path);
 void logger_close(void);
-void log_msg(LogLevel level, const char *fmt, ...);
+void log_msg(Log_Level level, const char *fmt, ...);
 
 #define LOG_DEBUG(...) log_msg(LOG_LEVEL_DEBUG, __VA_ARGS__)
 #define LOG_INFO(...)  log_msg(LOG_LEVEL_INFO, __VA_ARGS__)
@@ -109,8 +83,8 @@ int chroot_exec_as_user(const char *username, const char *cmd);
 int chroot_exec_as_user_fmt(const char *username, const char *fmt, ...);
 int git_clone_as_user(const char *username, const char *repo_url, const char *dest_path);
 int make_clean_install(const char *build_dir);
-int create_user_dotfile(const char *username, const DotFile *dotfile);
-int setup_systemd_override(const SystemdOverride *override);
+int create_user_dotfile(const char *username, const Dotfile *dotfile);
+int setup_systemd_override(const Systemd_Override *override);
 
 void show_message(const char *message);
 
