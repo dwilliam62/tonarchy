@@ -15,7 +15,7 @@ static const char *XFCE_PACKAGES = "base base-devel linux linux-firmware linux-h
 
 static const char *SUCKLESS_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr libx11 libxft libxinerama firefox picom xclip xwallpaper ttf-jetbrains-mono-nerd slock maim rofi alsa-utils pulseaudio pulseaudio-alsa pavucontrol";
 
-static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit firefox alacritty vlc evince eog cargo ttf-iosevka-nerd";
+static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr libx11 libxft freetype2 fontconfig pkg-config lua firefox alacritty vlc evince eog cargo ttf-jetbrains-mono-nerd picom xclip xwallpaper maim rofi pulseaudio pulseaudio-alsa pavucontrol alsa-utils fastfetch ripgrep";
 
 void logger_init(const char *log_path) {
     log_file = fopen(log_path, "a");
@@ -551,9 +551,16 @@ static int get_form_input(
                 current_field++;
             }
         } else if (current_field == 1) {
-            int result = handle_password_entry(password, confirmed_password,
-                                                form_row, logo_start,
-                                                username, hostname, keyboard, timezone);
+            int result = handle_password_entry(
+                password,
+                confirmed_password,
+                form_row,
+                logo_start,
+                username,
+                hostname,
+                keyboard,
+                timezone
+            );
             if (result == -1) return 0;
             if (result == 1) current_field = 3;
         } else if (current_field == 2) {
@@ -1021,27 +1028,33 @@ static int configure_xfce(const char *username) {
     create_directory("/mnt/usr/share/tonarchy", 0755);
     system("cp /usr/share/tonarchy/favicon.png /mnt/usr/share/tonarchy/favicon.png");
 
-    LOG_INFO("Creating Firefox profile with -CreateProfile");
-    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt sudo -u %s firefox -CreateProfile default-release 2>> /tmp/tonarchy-install.log", username);
-    if (system(cmd) != 0) {
-        LOG_WARN("Failed to create Firefox profile, trying fallback method");
-    }
+    LOG_INFO("Setting up Firefox profile");
+    snprintf(cmd, sizeof(cmd), "/mnt/home/%s/.config/firefox", username);
+    create_directory(cmd, 0755);
 
-    LOG_INFO("Copying user.js, extensions, and theme to Firefox profile");
-    snprintf(cmd, sizeof(cmd),
-        "PROFILE_DIR=$(arch-chroot /mnt find /home/%s/.config/mozilla/firefox -maxdepth 1 -name '*.default-release' -type d | head -1) && "
-        "if [ -n \"$PROFILE_DIR\" ]; then "
-        "cp -r /usr/share/tonarchy/firefox/default-release/* \"$PROFILE_DIR/\" && "
-        "echo \"Copied Firefox profile files to $PROFILE_DIR\" >> /tmp/tonarchy-install.log; "
-        "fi",
-        username);
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/firefox/default-release/* /mnt/home/%s/.config/firefox/", username);
     system(cmd);
 
-    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config/mozilla", username, username, username);
+    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config/firefox", username, username, username);
     system(cmd);
 
     create_directory("/mnt/usr/lib/firefox/distribution", 0755);
     system("cp /usr/share/tonarchy/firefox-policies/policies.json /mnt/usr/lib/firefox/distribution/");
+
+    snprintf(cmd, sizeof(cmd), "/mnt/usr/share/applications");
+    create_directory(cmd, 0755);
+
+    snprintf(cmd, sizeof(cmd), "/mnt/usr/share/applications/firefox.desktop");
+    write_file(cmd,
+        "[Desktop Entry]\n"
+        "Name=Firefox\n"
+        "GenericName=Web Browser\n"
+        "Exec=sh -c 'firefox --profile $HOME/.config/firefox'\n"
+        "Type=Application\n"
+        "Icon=firefox\n"
+        "Categories=Network;WebBrowser;\n"
+        "MimeType=text/html;text/xml;application/xhtml+xml;application/vnd.mozilla.xul+xml;\n"
+    );
 
     snprintf(cmd, sizeof(cmd), "/mnt/home/%s/.config", username);
     create_directory(cmd, 0755);
@@ -1307,6 +1320,8 @@ int main(void) {
         logger_close();
         return 0;
     }
+
+    system("cp /tmp/tonarchy-install.log /mnt/var/log/tonarchy-install.log");
 
     clear_screen();
     int rows, cols;
