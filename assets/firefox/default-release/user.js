@@ -185,4 +185,8 @@ user_pref("browser.ping-centre.telemetry", false);
 user_pref("browser.messaging-system.whatsNewPanel.enabled", false);
 user_pref("browser.contentanalysis.default_allow", false);
 user_pref("widget.non-native-theme.enabled", true); // [DEFAULT: true]
+user_pref("layout.css.prefers-color-scheme.content-override", 0);
+user_pref("ui.systemUsesDarkTheme", 1);
+user_pref("browser.theme.content-theme", 0);
+user_pref("browser.theme.toolbar-theme", 0);
 user_pref("_user.js.parrot", "SUCCESS: No no he's not dead, he's, he's restin'!");

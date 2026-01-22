@@ -4,6 +4,7 @@ linux-firmware
 mkinitcpio
 mkinitcpio-archiso
 squashfs-tools
+syslinux
 efibootmgr
 ncurses
 gcc
@@ -15,6 +16,7 @@ e2fsprogs
 dosfstools
 btrfs-progs
 gptfdisk
+parted
 util-linux
 terminus-font
 fzf

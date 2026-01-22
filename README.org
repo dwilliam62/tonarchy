@@ -6,24 +6,21 @@
 
 A zero-dependency Arch Linux installer with a clean TUI built from scratch in C.
 
-*Status:* Alpha - Beginner (XFCE) and Suckless modes functional, Wayland (Niri) coming soon
+*Status:* Alpha - Beginner (XFCE) and Oxidized (OXWM) modes functional, Wayland (Niri) coming soon
 
 * Philosophy
 
 Tonarchy is designed to take users from *zero to hero* with an opinionated beginner mode that sets up a complete, working Linux desktop environment. No choices, no confusion - just a solid foundation to start learning.
 
-For experienced users, the suckless mode provides a minimal dwm setup.
+For experienced users, the Oxidized mode provides a minimal OXWM setup.
 
 * Installation Modes
 
 ** Beginner (XFCE)
 Opinionated setup with XFCE desktop, essential applications, and sane defaults. Perfect for your first Linux installation.
 
-** Tony-Suckless (dwm)
-Minimal setup with dwm, st, and dmenu built from source. For users who want a lightweight tiling experience.
-
-** Oxidized (Coming Soon)
-Wayland-native setup with Niri compositor. Modern, secure, and efficient.
+** Oxidized (OXWM)
+Minimal setup with OXWM (Rust/Lua window manager), Alacritty, and Thunar. Lightweight tiling with Lua configuration.
 
 * Keybindings
 
@@ -67,7 +64,7 @@ Wayland-native setup with Niri compositor. Modern, secure, and efficient.
 
 * Requirements
 
-- UEFI system
+- UEFI or BIOS system
 - Internet connection
 - Boot from Tonarchy ISO
 
@@ -95,23 +92,51 @@ The beginner installation handles everything:
 - NetworkManager enabled
 - Sudo configured for wheel group
 
-** Disk Layout
+** Disk Layout (UEFI)
 - 1GB FAT32 EFI partition
 - 4GB swap partition
 - Remaining space for ext4 root
 
+** Disk Layout (BIOS)
+- 4GB swap partition
+- Remaining space for ext4 root (bootable)
+
 * Roadmap
 
 - [X] XFCE Beginner Mode
-- [X] Suckless Mode (dwm/st/dmenu)
+- [X] Oxidized Mode (OXWM)
+- [X] BIOS support
 - [ ] Niri Wayland Mode
 - [ ] Encrypted disk support
 - [ ] Multi-disk configurations
 
-* Building
+* Building the ISO
+
+** On Arch Linux
 
 #+BEGIN_SRC bash
-make
+make build_iso
+./build_iso --container podman
+#+END_SRC
+
+Or natively (requires =archiso= and =musl=):
+
+#+BEGIN_SRC bash
+make build_iso
+./build_iso
+#+END_SRC
+
+** On NixOS
+
+#+BEGIN_SRC bash
+nix run .#build_iso -- --container podman
+#+END_SRC
+
+** Testing
+
+#+BEGIN_SRC bash
+make test-nix   # NixOS
+make test       # Arch
 #+END_SRC
 
 * License

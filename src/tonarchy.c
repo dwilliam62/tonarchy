@@ -7,15 +7,17 @@ static struct termios orig_termios;
 
 enum Install_Option {
     BEGINNER = 0,
-    SUCKLESS = 1,
-    OXIDIZED = 2
+    OXIDIZED = 1
 };
 
-static const char *XFCE_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xrandr xorg-xset xfce4 xfce4-goodies xfce4-session xfce4-whiskermenu-plugin thunar thunar-archive-plugin file-roller firefox alacritty vlc evince eog fastfetch rofi ripgrep ttf-iosevka-nerd ttf-jetbrains-mono-nerd";
+static const char *XFCE_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xrandr xorg-xset xfce4 xfce4-goodies xfce4-session xfce4-whiskermenu-plugin thunar thunar-archive-plugin file-roller firefox alacritty vlc evince eog fastfetch rofi ripgrep fd ttf-iosevka-nerd ttf-jetbrains-mono-nerd";
 
-static const char *SUCKLESS_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr xorg-xset libx11 libxft libxinerama firefox picom xclip xwallpaper ttf-jetbrains-mono-nerd ttf-iosevka-nerd slock maim rofi alsa-utils pulseaudio pulseaudio-alsa pavucontrol";
+static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr xorg-xset libx11 libxft freetype2 fontconfig pkg-config lua firefox alacritty vlc evince eog cargo ttf-iosevka-nerd ttf-jetbrains-mono-nerd picom xclip xwallpaper maim rofi pulseaudio pulseaudio-alsa pavucontrol alsa-utils fastfetch ripgrep fd pcmanfm";
 
-static const char *OXWM_PACKAGES = "base base-devel linux linux-firmware linux-headers networkmanager git vim neovim curl wget htop btop man-db man-pages openssh sudo xorg-server xorg-xinit xorg-xsetroot xorg-xrandr xorg-xset libx11 libxft freetype2 fontconfig pkg-config lua firefox alacritty vlc evince eog cargo ttf-iosevka-nerd ttf-jetbrains-mono-nerd picom xclip xwallpaper maim rofi pulseaudio pulseaudio-alsa pavucontrol alsa-utils fastfetch ripgrep";
+static int is_uefi_system(void) {
+    struct stat st;
+    return stat("/sys/firmware/efi", &st) == 0;
+}
 
 void logger_init(const char *log_path) {
     log_file = fopen(log_path, "a");
@@ -726,10 +728,12 @@ static int partition_disk(const char *disk) {
     draw_logo(cols);
 
     int logo_start = (cols - 70) / 2;
-    printf("\033[%d;%dH\033[37mPartitioning /dev/%s...\033[0m", 10, logo_start, disk);
+    int uefi = is_uefi_system();
+
+    printf("\033[%d;%dH\033[37mPartitioning /dev/%s (%s mode)...\033[0m", 10, logo_start, disk, uefi ? "UEFI" : "BIOS");
     fflush(stdout);
 
-    LOG_INFO("Starting disk partitioning: /dev/%s", disk);
+    LOG_INFO("Starting disk partitioning: /dev/%s (mode: %s)", disk, uefi ? "UEFI" : "BIOS");
 
     snprintf(cmd, sizeof(cmd), "wipefs -af /dev/%s 2>> /tmp/tonarchy-install.log", disk);
     if (system(cmd) != 0) {
@@ -739,81 +743,130 @@ static int partition_disk(const char *disk) {
     }
     LOG_INFO("Wiped disk");
 
-    snprintf(cmd, sizeof(cmd), "sgdisk --zap-all /dev/%s 2>> /tmp/tonarchy-install.log", disk);
-    if (system(cmd) != 0) {
-        LOG_ERROR("Failed to zap disk: /dev/%s", disk);
-        show_message("Failed to zap disk");
-        return 0;
-    }
-    LOG_INFO("Zapped disk");
+    if (uefi) {
+        snprintf(cmd, sizeof(cmd), "sgdisk --zap-all /dev/%s 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to zap disk: /dev/%s", disk);
+            show_message("Failed to zap disk");
+            return 0;
+        }
+        LOG_INFO("Zapped disk (GPT)");
 
-    snprintf(cmd, sizeof(cmd),
-        "sgdisk --clear "
-        "--new=1:0:+1G --typecode=1:ef00 --change-name=1:EFI "
-        "--new=2:0:+4G --typecode=2:8200 --change-name=2:swap "
-        "--new=3:0:0 --typecode=3:8300 --change-name=3:root "
-        "/dev/%s 2>> /tmp/tonarchy-install.log", disk);
-    if (system(cmd) != 0) {
-        LOG_ERROR("Failed to create partitions on /dev/%s", disk);
-        show_message("Failed to create partitions");
-        return 0;
+        snprintf(cmd, sizeof(cmd),
+            "sgdisk --clear "
+            "--new=1:0:+1G --typecode=1:ef00 --change-name=1:EFI "
+            "--new=2:0:+4G --typecode=2:8200 --change-name=2:swap "
+            "--new=3:0:0 --typecode=3:8300 --change-name=3:root "
+            "/dev/%s 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to create partitions on /dev/%s", disk);
+            show_message("Failed to create partitions");
+            return 0;
+        }
+        LOG_INFO("Created partitions (EFI, swap, root)");
+    } else {
+        snprintf(cmd, sizeof(cmd),
+            "parted -s /dev/%s mklabel msdos "
+            "mkpart primary linux-swap 1MiB 4GiB "
+            "mkpart primary ext4 4GiB 100%% "
+            "set 2 boot on 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to create MBR partitions on /dev/%s", disk);
+            show_message("Failed to create partitions");
+            return 0;
+        }
+        LOG_INFO("Created MBR partitions (swap, root)");
     }
-    LOG_INFO("Created partitions (EFI, swap, root)");
 
     printf("\033[%d;%dH\033[37mFormatting partitions...\033[0m", 11, logo_start);
     fflush(stdout);
 
-    snprintf(cmd, sizeof(cmd), "mkfs.fat -F32 /dev/%s1 2>> /tmp/tonarchy-install.log", disk);
-    if (system(cmd) != 0) {
-        LOG_ERROR("Failed to format EFI partition: /dev/%s1", disk);
-        show_message("Failed to format EFI partition");
-        return 0;
-    }
-    LOG_INFO("Formatted EFI partition");
+    if (uefi) {
+        snprintf(cmd, sizeof(cmd), "mkfs.fat -F32 /dev/%s1 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to format EFI partition: /dev/%s1", disk);
+            show_message("Failed to format EFI partition");
+            return 0;
+        }
+        LOG_INFO("Formatted EFI partition");
 
-    snprintf(cmd, sizeof(cmd), "mkswap /dev/%s2 2>> /tmp/tonarchy-install.log", disk);
-    if (system(cmd) != 0) {
-        LOG_ERROR("Failed to format swap: /dev/%s2", disk);
-        show_message("Failed to format swap partition");
-        return 0;
-    }
-    LOG_INFO("Formatted swap partition");
+        snprintf(cmd, sizeof(cmd), "mkswap /dev/%s2 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to format swap: /dev/%s2", disk);
+            show_message("Failed to format swap partition");
+            return 0;
+        }
+        LOG_INFO("Formatted swap partition");
 
-    snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F /dev/%s3 2>> /tmp/tonarchy-install.log", disk);
-    if (system(cmd) != 0) {
-        LOG_ERROR("Failed to format root: /dev/%s3", disk);
-        show_message("Failed to format root partition");
-        return 0;
+        snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F /dev/%s3 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to format root: /dev/%s3", disk);
+            show_message("Failed to format root partition");
+            return 0;
+        }
+        LOG_INFO("Formatted root partition");
+    } else {
+        snprintf(cmd, sizeof(cmd), "mkswap /dev/%s1 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to format swap: /dev/%s1", disk);
+            show_message("Failed to format swap partition");
+            return 0;
+        }
+        LOG_INFO("Formatted swap partition");
+
+        snprintf(cmd, sizeof(cmd), "mkfs.ext4 -F /dev/%s2 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to format root: /dev/%s2", disk);
+            show_message("Failed to format root partition");
+            return 0;
+        }
+        LOG_INFO("Formatted root partition");
     }
-    LOG_INFO("Formatted root partition");
 
     printf("\033[%d;%dH\033[37mMounting partitions...\033[0m", 12, logo_start);
     fflush(stdout);
 
-    snprintf(cmd, sizeof(cmd), "mount /dev/%s3 /mnt 2>> /tmp/tonarchy-install.log", disk);
-    if (system(cmd) != 0) {
-        LOG_ERROR("Failed to mount root: /dev/%s3", disk);
-        show_message("Failed to mount root partition");
-        return 0;
-    }
-    LOG_INFO("Mounted root partition");
+    if (uefi) {
+        snprintf(cmd, sizeof(cmd), "mount /dev/%s3 /mnt 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to mount root: /dev/%s3", disk);
+            show_message("Failed to mount root partition");
+            return 0;
+        }
+        LOG_INFO("Mounted root partition");
 
-    snprintf(cmd, sizeof(cmd), "mkdir -p /mnt/boot 2>> /tmp/tonarchy-install.log");
-    system(cmd);
+        snprintf(cmd, sizeof(cmd), "mkdir -p /mnt/boot 2>> /tmp/tonarchy-install.log");
+        system(cmd);
 
-    snprintf(cmd, sizeof(cmd), "mount /dev/%s1 /mnt/boot 2>> /tmp/tonarchy-install.log", disk);
-    if (system(cmd) != 0) {
-        LOG_ERROR("Failed to mount EFI: /dev/%s1", disk);
-        show_message("Failed to mount EFI partition");
-        return 0;
-    }
-    LOG_INFO("Mounted EFI partition");
+        snprintf(cmd, sizeof(cmd), "mount /dev/%s1 /mnt/boot 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to mount EFI: /dev/%s1", disk);
+            show_message("Failed to mount EFI partition");
+            return 0;
+        }
+        LOG_INFO("Mounted EFI partition");
 
-    snprintf(cmd, sizeof(cmd), "swapon /dev/%s2 2>> /tmp/tonarchy-install.log", disk);
-    if (system(cmd) != 0) {
-        LOG_ERROR("Failed to enable swap: /dev/%s2", disk);
-        show_message("Failed to enable swap");
-        return 0;
+        snprintf(cmd, sizeof(cmd), "swapon /dev/%s2 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to enable swap: /dev/%s2", disk);
+            show_message("Failed to enable swap");
+            return 0;
+        }
+    } else {
+        snprintf(cmd, sizeof(cmd), "mount /dev/%s2 /mnt 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to mount root: /dev/%s2", disk);
+            show_message("Failed to mount root partition");
+            return 0;
+        }
+        LOG_INFO("Mounted root partition");
+
+        snprintf(cmd, sizeof(cmd), "swapon /dev/%s1 2>> /tmp/tonarchy-install.log", disk);
+        if (system(cmd) != 0) {
+            LOG_ERROR("Failed to enable swap: /dev/%s1", disk);
+            show_message("Failed to enable swap");
+            return 0;
+        }
     }
     LOG_INFO("Enabled swap");
     LOG_INFO("Disk partitioning completed successfully");
@@ -980,30 +1033,56 @@ static int install_bootloader(const char *disk) {
     draw_logo(cols);
 
     int logo_start = (cols - 70) / 2;
-    printf("\033[%d;%dH\033[37mInstalling bootloader...\033[0m", 10, logo_start);
+    int uefi = is_uefi_system();
+
+    printf("\033[%d;%dH\033[37mInstalling bootloader (%s)...\033[0m", 10, logo_start, uefi ? "systemd-boot" : "GRUB");
     fflush(stdout);
 
-    snprintf(cmd, sizeof(cmd),
-        "arch-chroot /mnt /bin/bash -c '\n"
-        "bootctl install\n"
-        "cat > /boot/loader/loader.conf <<EOF\n"
-        "default arch.conf\n"
-        "timeout 3\n"
-        "console-mode max\n"
-        "editor no\n"
-        "EOF\n"
-        "cat > /boot/loader/entries/arch.conf <<EOF\n"
-        "title   Tonarchy\n"
-        "linux   /vmlinuz-linux\n"
-        "initrd  /initramfs-linux.img\n"
-        "options root=/dev/%s3 rw\n"
-        "EOF\n"
-        "'",
-        disk);
+    if (uefi) {
+        snprintf(cmd, sizeof(cmd),
+            "arch-chroot /mnt /bin/bash -c '\n"
+            "bootctl install\n"
+            "cat > /boot/loader/loader.conf <<EOF\n"
+            "default arch.conf\n"
+            "timeout 3\n"
+            "console-mode max\n"
+            "editor no\n"
+            "EOF\n"
+            "cat > /boot/loader/entries/arch.conf <<EOF\n"
+            "title   Tonarchy\n"
+            "linux   /vmlinuz-linux\n"
+            "initrd  /initramfs-linux.img\n"
+            "options root=/dev/%s3 rw\n"
+            "EOF\n"
+            "'",
+            disk);
 
-    if (system(cmd) != 0) {
-        show_message("Failed to install bootloader");
-        return 0;
+        if (system(cmd) != 0) {
+            show_message("Failed to install bootloader");
+            return 0;
+        }
+    } else {
+        snprintf(cmd, sizeof(cmd),
+            "arch-chroot /mnt pacman -S --noconfirm grub 2>> /tmp/tonarchy-install.log");
+        if (system(cmd) != 0) {
+            show_message("Failed to install GRUB package");
+            return 0;
+        }
+
+        snprintf(cmd, sizeof(cmd),
+            "arch-chroot /mnt grub-install --target=i386-pc /dev/%s 2>> /tmp/tonarchy-install.log",
+            disk);
+        if (system(cmd) != 0) {
+            show_message("Failed to install GRUB");
+            return 0;
+        }
+
+        snprintf(cmd, sizeof(cmd),
+            "arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg 2>> /tmp/tonarchy-install.log");
+        if (system(cmd) != 0) {
+            show_message("Failed to generate GRUB config");
+            return 0;
+        }
     }
 
     show_message("Bootloader installed successfully!");
@@ -1047,6 +1126,9 @@ static int setup_common_configs(const char *username) {
     snprintf(cmd, sizeof(cmd), "/mnt/home/%s/.config", username);
     create_directory(cmd, 0755);
 
+    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config", username, username, username);
+    system(cmd);
+
     snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/alacritty /mnt/home/%s/.config/alacritty", username);
     system(cmd);
 
@@ -1056,11 +1138,12 @@ static int setup_common_configs(const char *username) {
     snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/fastfetch /mnt/home/%s/.config/fastfetch", username);
     system(cmd);
 
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/picom /mnt/home/%s/.config/picom", username);
+    system(cmd);
+
     char nvim_path[256];
     snprintf(nvim_path, sizeof(nvim_path), "/home/%s/.config/nvim", username);
     git_clone_as_user(username, "https://github.com/tonybanters/nvim", nvim_path);
-    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config/nvim", username, username, username);
-    system(cmd);
 
     snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config", username, username, username);
     system(cmd);
@@ -1156,78 +1239,6 @@ static int configure_xfce(const char *username) {
     return 1;
 }
 
-static int install_suckless_tools(const char *username) {
-    int rows, cols;
-    get_terminal_size(&rows, &cols);
-
-    clear_screen();
-    draw_logo(cols);
-
-    int logo_start = (cols - 70) / 2;
-    printf("\033[%d;%dH\033[37mInstalling suckless tools (dwm, st, dmenu)...\033[0m", 10, logo_start);
-    printf("\033[%d;%dH\033[37mCloning and building from source...\033[0m", 11, logo_start);
-    fflush(stdout);
-
-    LOG_INFO("Starting suckless tools installation for user: %s", username);
-
-    Git_Repo repos[] = {
-        {"https://github.com/tonybanters/dwm", "dwm", "/home/%s/dwm"},
-        {"https://github.com/tonybanters/st", "st", "/home/%s/st"},
-        {"https://github.com/tonybanters/dmenu", "dmenu", "/home/%s/dmenu"},
-    };
-
-    char home_dir[256];
-    snprintf(home_dir, sizeof(home_dir), "/home/%s", username);
-
-    if (!chroot_exec_fmt("cd %s", home_dir)) {
-        LOG_ERROR("Failed to change to user home directory");
-        show_message("Failed to install suckless tools");
-        return 0;
-    }
-
-    for (size_t i = 0; i < sizeof(repos) / sizeof(repos[0]); i++) {
-        char dest_path[512];
-        snprintf(dest_path, sizeof(dest_path), repos[i].build_dir, username);
-
-        if (!git_clone_as_user(username, repos[i].repo_url, dest_path)) {
-            LOG_ERROR("Failed to clone %s", repos[i].name);
-            show_message("Failed to clone repositories");
-            return 0;
-        }
-
-        if (!make_clean_install(dest_path)) {
-            LOG_ERROR("Failed to build %s", repos[i].name);
-            show_message("Failed to build suckless tools");
-            return 0;
-        }
-    }
-
-    create_directory("/mnt/usr/share/wallpapers", 0755);
-    system("cp /usr/share/wallpapers/wall1.jpg /mnt/usr/share/wallpapers/wall1.jpg");
-
-    Dotfile dotfiles[] = {
-        { ".xinitrc", "xwallpaper --zoom /usr/share/wallpapers/wall1.jpg &\nexec dwm\n", 0755 },
-        { ".bash_profile", BASH_PROFILE_CONTENT, 0644 }
-    };
-
-    for (size_t i = 0; i < sizeof(dotfiles) / sizeof(dotfiles[0]); i++) {
-        if (!create_user_dotfile(username, &dotfiles[i])) {
-            LOG_ERROR("Failed to create dotfile: %s", dotfiles[i].filename);
-            show_message("Failed to create dotfiles");
-            return 0;
-        }
-    }
-
-    if (!setup_autologin(username)) {
-        show_message("Failed to setup autologin");
-        return 0;
-    }
-
-    LOG_INFO("Suckless tools installation completed successfully");
-    show_message("Suckless tools installed successfully!");
-    return 1;
-}
-
 static int configure_oxwm(const char *username) {
     char cmd[4096];
     int rows, cols;
@@ -1242,21 +1253,6 @@ static int configure_oxwm(const char *username) {
     fflush(stdout);
 
     LOG_INFO("Starting OXWM installation for user: %s", username);
-
-    char st_path[256];
-    snprintf(st_path, sizeof(st_path), "/home/%s/st", username);
-
-    if (!git_clone_as_user(username, "https://github.com/tonybanters/st", st_path)) {
-        LOG_ERROR("Failed to clone st");
-        show_message("Failed to clone st");
-        return 0;
-    }
-
-    if (!make_clean_install(st_path)) {
-        LOG_ERROR("Failed to build st");
-        show_message("Failed to build st");
-        return 0;
-    }
 
     char oxwm_path[256];
     snprintf(oxwm_path, sizeof(oxwm_path), "/home/%s/oxwm", username);
@@ -1283,17 +1279,26 @@ static int configure_oxwm(const char *username) {
 
     setup_common_configs(username);
 
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/gtk-3.0 /mnt/home/%s/.config/gtk-3.0", username);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "cp -r /usr/share/tonarchy/gtk-4.0 /mnt/home/%s/.config/gtk-4.0", username);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "cp /usr/share/tonarchy/gtkrc-2.0 /mnt/home/%s/.gtkrc-2.0", username);
+    system(cmd);
+
     snprintf(cmd, sizeof(cmd), "/mnt/home/%s/.config/oxwm", username);
     create_directory(cmd, 0755);
 
     snprintf(cmd, sizeof(cmd), "cp /mnt%s/templates/tonarchy-config.lua /mnt/home/%s/.config/oxwm/config.lua", oxwm_path, username);
     system(cmd);
 
-    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config/oxwm", username, username, username);
+    snprintf(cmd, sizeof(cmd), "arch-chroot /mnt chown -R %s:%s /home/%s/.config", username, username, username);
     system(cmd);
 
     Dotfile dotfiles[] = {
-        { ".xinitrc", "xset r rate 200 35 &\npicom &\nxwallpaper --zoom /usr/share/wallpapers/wall1.jpg &\nexec oxwm\n", 0755 },
+        { ".xinitrc", "export GTK_THEME=Adwaita-dark\nxset r rate 200 35 &\npicom --config ~/.config/picom/picom.conf &\nxwallpaper --zoom /usr/share/wallpapers/wall1.jpg &\nexec oxwm\n", 0755 },
         { ".bash_profile", BASH_PROFILE_CONTENT, 0644 },
         { ".bashrc", BASHRC_CONTENT, 0644 }
     };
@@ -1332,11 +1337,10 @@ int main(void) {
 
     const char *levels[] = {
         "Beginner (XFCE desktop - perfect for starters)",
-        "Tony-Suckless (dwm + minimal setup)",
         "Oxidized (OXWM Beta)"
     };
 
-    int level = select_from_menu(levels, 3);
+    int level = select_from_menu(levels, 2);
     if (level < 0) {
         LOG_INFO("Installation cancelled by user at level selection");
         logger_close();
@@ -1360,12 +1364,6 @@ int main(void) {
         CHECK_OR_FAIL(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 0), "Failed to configure system");
         CHECK_OR_FAIL(install_bootloader(disk), "Failed to install bootloader");
         configure_xfce(username);
-    } else if (level == SUCKLESS) {
-        CHECK_OR_FAIL(partition_disk(disk), "Failed to partition disk");
-        CHECK_OR_FAIL(install_packages_impl(SUCKLESS_PACKAGES), "Failed to install packages");
-        CHECK_OR_FAIL(configure_system_impl(username, password, hostname, keyboard, timezone, disk, 0), "Failed to configure system");
-        CHECK_OR_FAIL(install_bootloader(disk), "Failed to install bootloader");
-        install_suckless_tools(username);
     } else {
         CHECK_OR_FAIL(partition_disk(disk), "Failed to partition disk");
         CHECK_OR_FAIL(install_packages_impl(OXWM_PACKAGES), "Failed to install packages");
